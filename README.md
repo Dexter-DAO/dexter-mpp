@@ -129,6 +129,14 @@ Client                    Seller Server              Dexter Settlement API      
 
 ---
 
+## Prerequisites
+
+**Recipients must have an existing USDC token account (ATA).** Dexter's security policy does not allow transaction-time ATA creation — this prevents a class of rent-drain attacks on the fee payer. In practice, any wallet that has ever held USDC already has an ATA. If the recipient's ATA doesn't exist, the settlement will fail with a clear simulation error.
+
+Buyers need only USDC. No SOL required — Dexter sponsors all transaction fees.
+
+---
+
 ## Server Options
 
 ```typescript
@@ -240,8 +248,11 @@ The [Solana MPP SDK](https://github.com/solana-foundation/solana-mpp-sdk) lets y
 npm install
 npm run build        # Compile to dist/
 npm run typecheck    # TypeScript checks
-npm test             # Run tests
+npm test             # Unit tests
+npm run test:devnet  # Real payment on Solana devnet (requires facilitator running)
 ```
+
+The devnet test exercises the complete flow with real on-chain transactions: ephemeral buyer and seller keypairs, real USDC transfers, full settlement through the live facilitator, and on-chain verification that the correct amount moved to the correct recipient with the correct fee payer.
 
 ---
 
