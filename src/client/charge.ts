@@ -58,6 +58,10 @@ export type ChargeParameters = {
  * ```
  */
 export function charge(params: ChargeParameters) {
+  if (!params.signer) {
+    throw new Error("@dexterai/mpp: charge() requires a 'signer' (TransactionSigner from @solana/kit)");
+  }
+
   const {
     signer,
     computeUnitPrice = 1n,

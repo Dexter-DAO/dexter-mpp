@@ -46,6 +46,10 @@ export type ChargeParameters = {
  * ```
  */
 export function charge(params: ChargeParameters) {
+  if (!params.recipient || typeof params.recipient !== "string" || !params.recipient.trim()) {
+    throw new Error("@dexterai/mpp: charge() requires a non-empty 'recipient' wallet address");
+  }
+
   const {
     recipient,
     apiUrl,
