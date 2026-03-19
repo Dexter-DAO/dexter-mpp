@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@dexterai/mpp"><img src="https://img.shields.io/npm/v/@dexterai/mpp.svg" alt="npm"></a>
-  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E=18-brightgreen.svg" alt="Node"></a>
+  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E=18.7-brightgreen.svg" alt="Node"></a>
   <a href="https://mpp.dev"><img src="https://img.shields.io/badge/MPP-mpp.dev-blue" alt="MPP"></a>
   <a href="https://x402.dexter.cash"><img src="https://img.shields.io/badge/Settlement-x402.dexter.cash-blueviolet" alt="Settlement API"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License"></a>
@@ -168,8 +168,11 @@ charge({
   signer: TransactionSigner;   // Required. Any @solana/kit TransactionSigner.
   computeUnitPrice?: bigint;   // Priority fee in micro-lamports. Default: 1
   computeUnitLimit?: number;   // Compute unit limit. Default: 50,000
+  onProgress?: (event) => void // Optional. Called at each step of the payment flow.
 })
 ```
+
+The `onProgress` callback receives events as the transaction is built and signed: `{ type: "building" }`, `{ type: "signing" }`, `{ type: "signed", transaction }`.
 
 Works with:
 - `createKeyPairSignerFromBytes()` from `@solana/kit` for headless agents
@@ -189,6 +192,12 @@ import { charge } from '@dexterai/mpp/server';
 
 // Client method (builds + signs Solana transactions)
 import { charge } from '@dexterai/mpp/client';
+
+// HTTP client and types (for direct API access)
+import { DexterSettlementClient, SettlementError } from '@dexterai/mpp/api';
+
+// Constants (USDC mints, token programs, default API URL)
+import { USDC_MINTS, TOKEN_PROGRAM, DEFAULT_DEXTER_API_URL } from '@dexterai/mpp/constants';
 ```
 
 ---
@@ -199,8 +208,10 @@ The settlement endpoints are open — no API keys, no accounts. Backpressure is 
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/mpp/prepare` | Returns fee payer pubkey, recent blockhash, and token config |
+| POST | `/mpp/prepare` | Returns fee payer pubkey, recent blockhash, lastValidBlockHeight, and token config |
 | POST | `/mpp/settle` | Full settlement: validate, co-sign, simulate, broadcast, confirm |
+
+Settlement errors include typed error codes (e.g., `policy:program_not_allowed`, `no_transfer_instruction`, backpressure codes). The `SettlementError` class from `@dexterai/mpp/api` preserves these for programmatic handling.
 
 Production: **https://x402.dexter.cash/mpp/**
 
