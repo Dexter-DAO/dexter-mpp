@@ -4,10 +4,15 @@ import { DexterSettlementClient, SettlementError } from "../api.js";
 import { USDC_MINTS, TOKEN_PROGRAM } from "../constants.js";
 
 export type ChargeParameters = {
+  /** Solana wallet address that receives USDC payments. */
   recipient: string;
+  /** Dexter settlement API URL. Default: `https://x402.dexter.cash` */
   apiUrl?: string;
+  /** Solana network name. Default: `"mainnet-beta"`. Also accepts `"devnet"`. */
   network?: string;
+  /** SPL token mint address. Default: USDC on the selected network. */
   splToken?: string;
+  /** Token decimals. Default: `6` (USDC). */
   decimals?: number;
   /**
    * Optional Solana RPC URL for independent on-chain verification after
@@ -22,6 +27,24 @@ export type ChargeParameters = {
   verifyRpcUrl?: string;
 };
 
+/**
+ * Creates a server-side MPP `dexter` charge method that delegates Solana
+ * settlement to Dexter's hosted infrastructure.
+ *
+ * The returned method handles challenge generation (via `/mpp/prepare`) and
+ * settlement verification (via `/mpp/settle`). The seller's server never
+ * touches the Solana network directly.
+ *
+ * @example
+ * ```ts
+ * import { Mppx } from 'mppx/server';
+ * import { charge } from '@dexterai/mpp/server';
+ *
+ * const mppx = Mppx.create({
+ *   methods: [charge({ recipient: 'YourWallet...' })],
+ * });
+ * ```
+ */
 export function charge(params: ChargeParameters) {
   const {
     recipient,

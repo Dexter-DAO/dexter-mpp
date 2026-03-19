@@ -54,6 +54,12 @@ export type SettleResponse = z.infer<typeof settleResponseSchema>;
 
 // ── Errors ──────────────────────────────────────────────────────────────────
 
+/**
+ * Error thrown when settlement fails or verification detects a mismatch.
+ * The `code` property contains a machine-readable error identifier such as
+ * `"policy:program_not_allowed"`, `"settlement_recipient_mismatch"`, or
+ * `"onchain_verification_amount_mismatch"`.
+ */
 export class SettlementError extends Error {
   readonly code: string;
 
@@ -67,11 +73,26 @@ export class SettlementError extends Error {
 // ── Client ──────────────────────────────────────────────────────────────────
 
 export type DexterSettlementClientOptions = {
+  /** Dexter settlement API base URL. Default: `https://x402.dexter.cash` */
   baseUrl?: string;
+  /** Timeout for `/mpp/prepare` calls in milliseconds. Default: `10000` (10s). */
   prepareTimeoutMs?: number;
+  /** Timeout for `/mpp/settle` calls in milliseconds. Default: `30000` (30s). */
   settleTimeoutMs?: number;
 };
 
+/**
+ * HTTP client for Dexter's MPP settlement API. Used internally by the
+ * server charge method; also available directly via `@dexterai/mpp/api`
+ * for custom integrations.
+ *
+ * @example
+ * ```ts
+ * import { DexterSettlementClient } from '@dexterai/mpp/api';
+ * const client = new DexterSettlementClient();
+ * const info = await client.prepare({ network: 'devnet' });
+ * ```
+ */
 export class DexterSettlementClient {
   private readonly baseUrl: string;
   private readonly prepareTimeoutMs: number;

@@ -242,6 +242,38 @@ The [Solana MPP SDK](https://github.com/solana-foundation/solana-mpp-sdk) lets y
 
 ---
 
+## Troubleshooting
+
+| Error code | Cause | Fix |
+|---|---|---|
+| `policy:program_not_allowed` | Transaction contains a program not in the facilitator's allowlist (e.g., ATA creation, System program) | Remove non-standard instructions. Only ComputeBudget, SPL Token, Token-2022, Lighthouse, and Memo are allowed. |
+| `no_transfer_instruction` | Transaction has no `TransferChecked` instruction | The transaction must contain a USDC `TransferChecked`. Check your client is building the payment correctly. |
+| `policy:fee_payer_not_isolated` | Fee payer address appears in an instruction's accounts | The fee payer can only sign for gas — it must not be referenced in any instruction. This prevents rent drain attacks. |
+| `invalid_transaction_encoding` | The base64 transaction couldn't be deserialized | Verify the client is sending a valid base64-encoded Solana VersionedTransaction. |
+| `settlement_recipient_mismatch` | Facilitator settled to a different address than the challenge specified | This indicates a facilitator bug. Contact Dexter support. |
+| `settlement_amount_mismatch` | Facilitator settled a different amount than the challenge specified | Same as above — facilitator-side issue. |
+| `global_settle_cap_exceeded` | Too many settlements globally — backpressure triggered | Wait and retry. The facilitator rate-limits to protect fee payer balance. |
+| `seller_settle_cap_exceeded` | Too many settlements for this recipient — backpressure triggered | Your endpoint is receiving high traffic. Contact Dexter about tier upgrades. |
+| Timeout after 10s on prepare | Facilitator unreachable or slow | Check that the facilitator is running and the `apiUrl` is correct. Default: `https://x402.dexter.cash` |
+| Timeout after 30s on settle | Settlement took too long (Solana congestion, RPC issues) | Retry. If persistent, check Solana network status. |
+| Simulation failure | The transaction would fail on-chain (insufficient USDC, ATA doesn't exist, etc.) | Verify the buyer has USDC and the recipient has a USDC token account (ATA). |
+
+---
+
+## Security Model
+
+Dexter managed settlement is a trust-delegated model — similar to using Stripe for card payments. The seller trusts Dexter to settle payments correctly.
+
+Two verification layers protect against facilitator bugs:
+
+1. **Settlement proof (default):** Every successful settlement response includes the verified `recipient`, `amount`, `asset`, and `feePayer`. The SDK checks these match the original challenge before issuing a receipt.
+
+2. **On-chain verification (opt-in):** Pass `verifyRpcUrl` to independently fetch and verify the transaction on-chain after settlement. Adds ~1-2s latency but is fully trustless.
+
+The settlement API is HTTPS in production (`https://x402.dexter.cash`). In local development over HTTP, ensure your network is trusted.
+
+---
+
 ## Development
 
 ```bash

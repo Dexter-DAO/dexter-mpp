@@ -29,12 +29,34 @@ export type ProgressEvent =
   | { type: "signed"; transaction: string };
 
 export type ChargeParameters = {
+  /** Solana transaction signer. Accepts `@solana/kit` KeyPairSigner, ConnectorKit signers, or any TransactionSigner. */
   signer: TransactionSigner;
+  /** Priority fee in micro-lamports. Default: `1n`. */
   computeUnitPrice?: bigint;
+  /** Compute unit limit. Default: `50_000`. */
   computeUnitLimit?: number;
+  /** Called at each step: `"building"`, `"signing"`, `"signed"`. */
   onProgress?: (event: ProgressEvent) => void;
 };
 
+/**
+ * Creates a client-side MPP `dexter` charge method that builds and partially
+ * signs Solana USDC transfer transactions.
+ *
+ * The client reads all payment parameters (fee payer, blockhash, token config)
+ * from the server's 402 challenge — no RPC access needed. The transaction is
+ * partially signed with transfer authority only; Dexter co-signs as fee payer
+ * during settlement.
+ *
+ * @example
+ * ```ts
+ * import { Mppx } from 'mppx/client';
+ * import { charge } from '@dexterai/mpp/client';
+ *
+ * Mppx.create({ methods: [charge({ signer })] });
+ * const response = await fetch('https://api.example.com/paid');
+ * ```
+ */
 export function charge(params: ChargeParameters) {
   const {
     signer,
