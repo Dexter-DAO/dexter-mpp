@@ -1,0 +1,48 @@
+{
+  "name": "@dexterai/mpp",
+  "version": "0.1.0",
+  "description": "Dexter managed Solana settlement for the Machine Payments Protocol",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/methods.d.ts",
+      "import": "./dist/methods.js"
+    },
+    "./server": {
+      "types": "./dist/server/charge.d.ts",
+      "import": "./dist/server/charge.js"
+    },
+    "./client": {
+      "types": "./dist/client/charge.d.ts",
+      "import": "./dist/client/charge.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "mppx": ">=0.3.15",
+    "@solana/kit": ">=2.1.0",
+    "@solana-program/token": ">=0.5.0",
+    "@solana-program/compute-budget": ">=0.7.0"
+  },
+  "devDependencies": {
+    "mppx": "^0.3.15",
+    "@solana/kit": "^2.1.0",
+    "@solana-program/token": "^0.5.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Dexter-DAO/dexter-mpp"
+  }
+}
