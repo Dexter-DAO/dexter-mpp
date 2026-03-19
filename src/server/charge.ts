@@ -9,6 +9,17 @@ export type ChargeParameters = {
   network?: string;
   splToken?: string;
   decimals?: number;
+  /**
+   * Optional Solana RPC URL for independent on-chain verification after
+   * settlement. When provided, the server fetches the settled transaction
+   * and verifies the TransferChecked instruction matches the challenge
+   * (correct recipient, amount, and token). This catches facilitator bugs
+   * or regressions at the cost of one additional RPC round-trip (~1-2s).
+   *
+   * When omitted (default), the server verifies using the settlement proof
+   * returned by the facilitator — no RPC needed.
+   */
+  verifyRpcUrl?: string;
 };
 
 export function charge(params: ChargeParameters) {
@@ -18,6 +29,7 @@ export function charge(params: ChargeParameters) {
     network = "mainnet-beta",
     splToken,
     decimals = 6,
+    verifyRpcUrl,
   } = params;
 
   const client = new DexterSettlementClient(apiUrl);
@@ -83,12 +95,15 @@ export function charge(params: ChargeParameters) {
         throw new Error("Missing transaction in credential payload");
       }
 
+      const expectedAsset = challenge.methodDetails.splToken ?? defaultToken;
+      const expectedNetwork = challenge.methodDetails.network ?? network;
+
       const result = await client.settle({
         transaction: payload.transaction,
         recipient: challenge.recipient,
         amount: challenge.amount,
-        asset: challenge.methodDetails.splToken ?? defaultToken,
-        network: challenge.methodDetails.network ?? network,
+        asset: expectedAsset,
+        network: expectedNetwork,
       });
 
       if (!result.success) {
@@ -104,6 +119,38 @@ export function charge(params: ChargeParameters) {
         );
       }
 
+      // Verify settlement proof from facilitator response
+      if (result.settlement) {
+        const s = result.settlement;
+        if (s.recipient !== challenge.recipient) {
+          throw new SettlementError(
+            "settlement_recipient_mismatch",
+            `Facilitator settled to ${s.recipient} but challenge specified ${challenge.recipient}`,
+          );
+        }
+        if (s.amount !== challenge.amount) {
+          throw new SettlementError(
+            "settlement_amount_mismatch",
+            `Facilitator settled ${s.amount} but challenge specified ${challenge.amount}`,
+          );
+        }
+        if (s.asset && expectedAsset && s.asset !== expectedAsset) {
+          throw new SettlementError(
+            "settlement_asset_mismatch",
+            `Facilitator settled asset ${s.asset} but challenge specified ${expectedAsset}`,
+          );
+        }
+      }
+
+      // Optional: independent on-chain verification via seller-provided RPC
+      if (verifyRpcUrl) {
+        await verifyOnChain(verifyRpcUrl, result.signature, {
+          recipient: challenge.recipient,
+          amount: challenge.amount,
+          asset: expectedAsset,
+        });
+      }
+
       return Receipt.from({
         method: "dexter",
         reference: result.signature,
@@ -112,6 +159,87 @@ export function charge(params: ChargeParameters) {
       });
     },
   });
+}
+
+async function verifyOnChain(
+  rpcUrl: string,
+  signature: string,
+  expected: { recipient: string; amount: string; asset: string },
+): Promise<void> {
+  const res = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "getTransaction",
+      params: [
+        signature,
+        { encoding: "jsonParsed", commitment: "confirmed", maxSupportedTransactionVersion: 0 },
+      ],
+    }),
+  });
+
+  const data = (await res.json()) as {
+    result?: {
+      meta: { err: unknown } | null;
+      transaction: {
+        message: {
+          instructions: Array<{
+            program?: string;
+            programId?: string;
+            parsed?: { type: string; info: Record<string, unknown> };
+          }>;
+        };
+      };
+    } | null;
+  };
+
+  if (!data.result) {
+    throw new SettlementError(
+      "onchain_verification_tx_not_found",
+      `Transaction ${signature} not found on-chain`,
+    );
+  }
+
+  if (data.result.meta?.err) {
+    throw new SettlementError(
+      "onchain_verification_tx_failed",
+      `Transaction ${signature} failed on-chain: ${JSON.stringify(data.result.meta.err)}`,
+    );
+  }
+
+  const instructions = data.result.transaction.message.instructions;
+  const transfer = instructions.find(
+    (ix) => ix.parsed?.type === "transferChecked",
+  );
+
+  if (!transfer || !transfer.parsed) {
+    throw new SettlementError(
+      "onchain_verification_no_transfer",
+      `Transaction ${signature} contains no TransferChecked instruction`,
+    );
+  }
+
+  const info = transfer.parsed.info as {
+    mint?: string;
+    tokenAmount?: { amount?: string };
+    destination?: string;
+  };
+
+  if (info.mint && info.mint !== expected.asset) {
+    throw new SettlementError(
+      "onchain_verification_asset_mismatch",
+      `On-chain transfer used mint ${info.mint}, expected ${expected.asset}`,
+    );
+  }
+
+  if (info.tokenAmount?.amount && info.tokenAmount.amount !== expected.amount) {
+    throw new SettlementError(
+      "onchain_verification_amount_mismatch",
+      `On-chain transfer amount ${info.tokenAmount.amount}, expected ${expected.amount}`,
+    );
+  }
 }
 
 export { charge as default };

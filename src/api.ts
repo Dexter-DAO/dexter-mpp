@@ -16,11 +16,19 @@ const prepareResponseSchema = z.object({
   tokenProgram: z.string(),
 });
 
+const settlementProofSchema = z.object({
+  recipient: z.string(),
+  amount: z.string(),
+  asset: z.optional(z.string()),
+  feePayer: z.optional(z.string()),
+});
+
 const settleResponseSchema = z.object({
   success: z.boolean(),
   signature: z.optional(z.string()),
   payer: z.optional(z.string()),
   network: z.optional(z.string()),
+  settlement: z.optional(settlementProofSchema),
   error: z.optional(z.string()),
   errorCode: z.optional(z.string()),
   detail: z.optional(z.string()),
