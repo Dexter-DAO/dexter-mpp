@@ -37,20 +37,28 @@
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:devnet": "node --import tsx/esm test/devnet-e2e.ts"
   },
   "peerDependencies": {
-    "mppx": "^0.3.15",
-    "@solana/kit": "^2.1.0",
+    "@solana-program/compute-budget": "^0.7.0",
     "@solana-program/token": "^0.5.0",
-    "@solana-program/compute-budget": "^0.7.0"
+    "@solana/kit": "^2.1.0",
+    "mppx": "^0.3.15"
   },
   "devDependencies": {
-    "mppx": "^0.3.15",
-    "@solana/kit": "^2.1.0",
-    "@solana-program/token": "^0.5.0",
     "@solana-program/compute-budget": "^0.7.0",
+    "@solana-program/token": "^0.5.0",
+    "@solana/kit": "^2.1.0",
+    "@solana/spl-token": "^0.4.14",
+    "@solana/web3.js": "^1.98.4",
+    "@types/express": "^5.0.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "mppx": "^0.3.15",
+    "tsx": "^4.21.0",
     "typescript": "^5.7.0",
+    "viem": "^2.47.5",
     "vitest": "^3.0.0"
   },
   "keywords": [

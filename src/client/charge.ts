@@ -9,8 +9,6 @@ import {
   partiallySignTransactionMessageWithSigners,
   getBase64EncodedWireTransaction,
   address,
-  AccountRole,
-  type Address,
   type TransactionSigner,
   type Instruction,
 } from "@solana/kit";
@@ -23,10 +21,7 @@ import {
   findAssociatedTokenPda,
 } from "@solana-program/token";
 import * as Methods from "../methods.js";
-import {
-  TOKEN_PROGRAM,
-  ASSOCIATED_TOKEN_PROGRAM,
-} from "../constants.js";
+import { TOKEN_PROGRAM } from "../constants.js";
 
 export type ProgressEvent =
   | { type: "building"; recipient: string; amount: string; splToken: string }
@@ -100,16 +95,6 @@ export function charge(params: ChargeParameters) {
       const instructions: Instruction[] = [];
 
       instructions.push(
-        createAssociatedTokenAccountIdempotent(
-          address(feePayerKey),
-          address(recipient),
-          mint,
-          destAta,
-          tokenProg,
-        ),
-      );
-
-      instructions.push(
         getTransferCheckedInstruction(
           {
             source: sourceAta,
@@ -172,27 +157,6 @@ function createMemoInstruction(reference: string): Instruction {
     programAddress: address(MEMO_PROGRAM),
     accounts: [],
     data: textEncoder.encode(`mppx:${reference}`),
-  };
-}
-
-function createAssociatedTokenAccountIdempotent(
-  payer: Address,
-  owner: Address,
-  mint: Address,
-  ata: Address,
-  tokenProgram: Address,
-): Instruction {
-  return {
-    programAddress: address(ASSOCIATED_TOKEN_PROGRAM),
-    accounts: [
-      { address: payer, role: AccountRole.WRITABLE_SIGNER },
-      { address: ata, role: AccountRole.WRITABLE },
-      { address: owner, role: AccountRole.READONLY },
-      { address: mint, role: AccountRole.READONLY },
-      { address: address("11111111111111111111111111111111"), role: AccountRole.READONLY },
-      { address: tokenProgram, role: AccountRole.READONLY },
-    ],
-    data: new Uint8Array([1]),
   };
 }
 
