@@ -28,14 +28,25 @@ import {
   ASSOCIATED_TOKEN_PROGRAM,
 } from "../constants.js";
 
+export type ProgressEvent =
+  | { type: "building"; recipient: string; amount: string; splToken: string }
+  | { type: "signing" }
+  | { type: "signed"; transaction: string };
+
 export type ChargeParameters = {
   signer: TransactionSigner;
   computeUnitPrice?: bigint;
   computeUnitLimit?: number;
+  onProgress?: (event: ProgressEvent) => void;
 };
 
 export function charge(params: ChargeParameters) {
-  const { signer, computeUnitPrice = 1n, computeUnitLimit = 50_000 } = params;
+  const {
+    signer,
+    computeUnitPrice = 1n,
+    computeUnitLimit = 50_000,
+    onProgress,
+  } = params;
 
   return Method.toClient(Methods.charge, {
     async createCredential({ challenge }) {
@@ -43,23 +54,33 @@ export function charge(params: ChargeParameters) {
         amount: string;
         recipient: string;
         methodDetails: {
-          splToken: string;
-          decimals: number;
+          splToken?: string;
+          decimals?: number;
           tokenProgram?: string;
-          feePayerKey: string;
-          recentBlockhash: string;
-          reference: string;
+          feePayerKey?: string;
+          recentBlockhash?: string;
+          reference?: string;
         };
       };
 
-      const {
-        splToken,
-        decimals,
-        tokenProgram: tokenProgramAddr,
-        feePayerKey,
-        recentBlockhash,
-        reference,
-      } = methodDetails;
+      const splToken = methodDetails.splToken;
+      const decimals = methodDetails.decimals ?? 6;
+      const tokenProgramAddr = methodDetails.tokenProgram;
+      const feePayerKey = methodDetails.feePayerKey;
+      const recentBlockhash = methodDetails.recentBlockhash;
+      const reference = methodDetails.reference;
+
+      if (!splToken) {
+        throw new Error("Challenge missing required field: methodDetails.splToken");
+      }
+      if (!feePayerKey) {
+        throw new Error("Challenge missing required field: methodDetails.feePayerKey");
+      }
+      if (!recentBlockhash) {
+        throw new Error("Challenge missing required field: methodDetails.recentBlockhash");
+      }
+
+      onProgress?.({ type: "building", recipient, amount, splToken });
 
       const mint = address(splToken);
       const tokenProg = address(tokenProgramAddr || TOKEN_PROGRAM);
@@ -96,7 +117,7 @@ export function charge(params: ChargeParameters) {
             destination: destAta,
             authority: signer,
             amount: BigInt(amount),
-            decimals: decimals ?? 6,
+            decimals,
           },
           { programAddress: tokenProg },
         ),
@@ -112,6 +133,8 @@ export function charge(params: ChargeParameters) {
         >[0]["blockhash"],
         lastValidBlockHeight: 0n,
       };
+
+      onProgress?.({ type: "signing" });
 
       const txMessage = pipe(
         createTransactionMessage({ version: 0 }),
@@ -131,9 +154,11 @@ export function charge(params: ChargeParameters) {
       const signedTx = await partiallySignTransactionMessageWithSigners(txMessage);
       const encodedTx = getBase64EncodedWireTransaction(signedTx);
 
+      onProgress?.({ type: "signed", transaction: encodedTx });
+
       return Credential.serialize({
         challenge,
-        payload: { transaction: encodedTx },
+        payload: { type: "transaction", transaction: encodedTx },
       });
     },
   });

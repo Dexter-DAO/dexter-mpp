@@ -1,6 +1,6 @@
 import { Method, Receipt } from "mppx";
 import * as Methods from "../methods.js";
-import { DexterSettlementClient } from "../api.js";
+import { DexterSettlementClient, SettlementError } from "../api.js";
 import { USDC_MINTS, TOKEN_PROGRAM } from "../constants.js";
 
 export type ChargeParameters = {
@@ -29,12 +29,6 @@ export function charge(params: ChargeParameters) {
       recipient: "",
       methodDetails: {
         reference: "",
-        network: "",
-        splToken: "",
-        decimals: 6,
-        feePayer: true,
-        feePayerKey: "",
-        recentBlockhash: "",
       },
     },
 
@@ -65,28 +59,53 @@ export function charge(params: ChargeParameters) {
       const challenge = credential.challenge.request as {
         amount: string;
         recipient: string;
+        externalId?: string;
         methodDetails: {
-          splToken: string;
-          network: string;
+          splToken?: string;
+          network?: string;
         };
       };
-      const { transaction } = credential.payload as { transaction: string };
+
+      const payload = credential.payload as {
+        type?: string;
+        transaction?: string;
+        signature?: string;
+      };
+
+      if (payload.type && payload.type !== "transaction") {
+        throw new Error(
+          `Unsupported credential type: "${payload.type}". Dexter managed settlement only supports server-broadcast (type="transaction").`,
+        );
+      }
+
+      if (!payload.transaction) {
+        throw new Error("Missing transaction in credential payload");
+      }
 
       const result = await client.settle({
-        transaction,
+        transaction: payload.transaction,
         recipient: challenge.recipient,
         amount: challenge.amount,
-        asset: challenge.methodDetails.splToken,
-        network: challenge.methodDetails.network,
+        asset: challenge.methodDetails.splToken ?? defaultToken,
+        network: challenge.methodDetails.network ?? network,
       });
 
       if (!result.success) {
-        throw new Error(result.error ?? result.detail ?? "Settlement failed");
+        throw new SettlementError(
+          result.errorCode ?? result.error ?? "settlement_failed",
+          result.detail ?? result.error ?? "Settlement failed",
+        );
+      }
+
+      if (!result.signature) {
+        throw new Error(
+          "Facilitator returned success but no transaction signature — settlement state is ambiguous",
+        );
       }
 
       return Receipt.from({
         method: "dexter",
-        reference: result.signature ?? "",
+        reference: result.signature,
         status: "success",
         timestamp: new Date().toISOString(),
       });

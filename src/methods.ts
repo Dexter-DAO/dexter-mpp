@@ -6,7 +6,9 @@ export const charge = Method.from({
   schema: {
     credential: {
       payload: z.object({
-        transaction: z.string(),
+        type: z.optional(z.string()),
+        transaction: z.optional(z.string()),
+        signature: z.optional(z.string()),
       }),
     },
     request: z.object({
@@ -14,15 +16,16 @@ export const charge = Method.from({
       currency: z.string(),
       recipient: z.string(),
       description: z.optional(z.string()),
+      externalId: z.optional(z.string()),
       methodDetails: z.object({
         reference: z.string(),
-        network: z.string(),
-        splToken: z.string(),
-        decimals: z.number(),
+        network: z.optional(z.string()),
+        splToken: z.optional(z.string()),
+        decimals: z.optional(z.number()),
         tokenProgram: z.optional(z.string()),
-        feePayer: z.boolean(),
-        feePayerKey: z.string(),
-        recentBlockhash: z.string(),
+        feePayer: z.optional(z.boolean()),
+        feePayerKey: z.optional(z.string()),
+        recentBlockhash: z.optional(z.string()),
       }),
     }),
   },
