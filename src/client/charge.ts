@@ -54,6 +54,7 @@ export function charge(params: ChargeParameters) {
           tokenProgram?: string;
           feePayerKey?: string;
           recentBlockhash?: string;
+          lastValidBlockHeight?: number;
           reference?: string;
         };
       };
@@ -63,6 +64,7 @@ export function charge(params: ChargeParameters) {
       const tokenProgramAddr = methodDetails.tokenProgram;
       const feePayerKey = methodDetails.feePayerKey;
       const recentBlockhash = methodDetails.recentBlockhash;
+      const lastValidBlockHeight = methodDetails.lastValidBlockHeight;
       const reference = methodDetails.reference;
 
       if (!splToken) {
@@ -116,7 +118,7 @@ export function charge(params: ChargeParameters) {
         blockhash: recentBlockhash as Parameters<
           typeof setTransactionMessageLifetimeUsingBlockhash
         >[0]["blockhash"],
-        lastValidBlockHeight: 0n,
+        lastValidBlockHeight: BigInt(lastValidBlockHeight ?? 0),
       };
 
       onProgress?.({ type: "signing" });

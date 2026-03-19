@@ -26,6 +26,7 @@ export const charge = Method.from({
         feePayer: z.optional(z.boolean()),
         feePayerKey: z.optional(z.string()),
         recentBlockhash: z.optional(z.string()),
+        lastValidBlockHeight: z.optional(z.number()),
       }),
     }),
   },

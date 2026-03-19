@@ -51,6 +51,7 @@ export function charge(params: ChargeParameters) {
           feePayer: true,
           feePayerKey: prepared.feePayer,
           recentBlockhash: prepared.recentBlockhash,
+          lastValidBlockHeight: prepared.lastValidBlockHeight,
         },
       };
     },
