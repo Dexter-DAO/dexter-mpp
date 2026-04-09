@@ -1,6 +1,6 @@
 {
   "name": "@dexterai/mpp",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "Dexter managed Solana settlement for the Machine Payments Protocol",
   "type": "module",
   "sideEffects": false,
