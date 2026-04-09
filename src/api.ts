@@ -70,6 +70,70 @@ export class SettlementError extends Error {
   }
 }
 
+// ── Session Types ──────────────────────────────────────────────────────────
+
+export type SessionOpenRequest = {
+  buyer_wallet: string;
+  buyer_swig_address: string;
+  seller_wallet: string;
+  deposit_atomic: string;
+  network?: string;
+  idle_timeout_seconds?: number;
+  metadata?: Record<string, unknown>;
+};
+
+export type SessionOpenResponse = {
+  success: true;
+  channel_id: string;
+  session_pubkey: string;
+  deposit_atomic: string;
+  network: string;
+  channel_program: string;
+};
+
+export type SessionVoucherRequest = {
+  channel_id: string;
+  amount: string;
+  meter?: string;
+  units?: string;
+  serverNonce: string;
+};
+
+export type SessionVoucherResponse = {
+  success: true;
+  voucher: {
+    channelId: string;
+    payer: string;
+    recipient: string;
+    cumulativeAmount: string;
+    sequence: number;
+    meter: string;
+    units: string;
+    serverNonce: string;
+    chainId: string;
+    channelProgram: string;
+  };
+  signature: string;
+  signer: string;
+  signatureType: "ed25519";
+};
+
+export type SessionCloseRequest = {
+  channel_id: string;
+};
+
+export type SessionCloseResponse = {
+  success: true;
+  channel_id: string;
+  settlement: {
+    seller: string;
+    amount_settled: string;
+    buyer_refund: string;
+    voucher_count: number;
+    session_duration_seconds: number | null;
+  };
+};
+
 // ── Client ──────────────────────────────────────────────────────────────────
 
 export type DexterSettlementClientOptions = {
@@ -161,6 +225,71 @@ export class DexterSettlementClient {
       );
     }
     return parsed.data;
+  }
+
+  // ── Session Endpoints ───────────────────────────────────────────────────
+
+  async sessionOpen(params: SessionOpenRequest): Promise<SessionOpenResponse> {
+    const res = await this.fetchWithTimeout(
+      `${this.baseUrl}/mpp/session/open`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      },
+      this.settleTimeoutMs,
+    );
+
+    const data = await res.json();
+    if (!data.success) {
+      throw new SettlementError(
+        data.error ?? "session_open_failed",
+        data.detail ?? data.error ?? "Session open failed",
+      );
+    }
+    return data as SessionOpenResponse;
+  }
+
+  async sessionVoucher(params: SessionVoucherRequest): Promise<SessionVoucherResponse> {
+    const res = await this.fetchWithTimeout(
+      `${this.baseUrl}/mpp/session/voucher`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      },
+      this.prepareTimeoutMs,
+    );
+
+    const data = await res.json();
+    if (!data.success) {
+      throw new SettlementError(
+        data.error ?? "voucher_failed",
+        data.detail ?? data.error ?? "Voucher signing failed",
+      );
+    }
+    return data as SessionVoucherResponse;
+  }
+
+  async sessionClose(params: SessionCloseRequest): Promise<SessionCloseResponse> {
+    const res = await this.fetchWithTimeout(
+      `${this.baseUrl}/mpp/session/close`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      },
+      this.settleTimeoutMs,
+    );
+
+    const data = await res.json();
+    if (!data.success) {
+      throw new SettlementError(
+        data.error ?? "session_close_failed",
+        data.detail ?? data.error ?? "Session close failed",
+      );
+    }
+    return data as SessionCloseResponse;
   }
 
   private async fetchWithTimeout(

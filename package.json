@@ -17,6 +17,14 @@
       "types": "./dist/client/charge.d.ts",
       "import": "./dist/client/charge.js"
     },
+    "./server/session": {
+      "types": "./dist/server/session.d.ts",
+      "import": "./dist/server/session.js"
+    },
+    "./client/session": {
+      "types": "./dist/client/session.d.ts",
+      "import": "./dist/client/session.js"
+    },
     "./api": {
       "types": "./dist/api.d.ts",
       "import": "./dist/api.js"
