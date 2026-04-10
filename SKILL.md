@@ -18,11 +18,17 @@ Use this skill when building anything that involves MPP (Machine Payments Protoc
 
 ## When To Use What
 
-**Building a seller server that accepts MPP payments?**
+**Building a seller server that accepts one-shot MPP payments?**
 → `import { charge } from '@dexterai/mpp/server'`
 
-**Building an agent/client that pays for MPP resources?**
+**Building a seller server that accepts streaming session payments?**
+→ `import { createSessionServer } from '@dexterai/mpp/server/session'`
+
+**Building an agent/client that pays for MPP resources (one-shot)?**
 → `import { charge } from '@dexterai/mpp/client'`
+
+**Building an agent/client that pays via sessions (streaming)?**
+→ `import { createSessionClient } from '@dexterai/mpp/client/session'`
 
 **Need direct access to the settlement API?**
 → `import { DexterSettlementClient } from '@dexterai/mpp/api'`
@@ -33,6 +39,15 @@ Use this skill when building anything that involves MPP (Machine Payments Protoc
 **Need x402 payments instead of MPP?**
 → Use `@dexterai/x402` — see the **x402-implementations** skill
 
+### Charge vs Sessions — when to use which
+
+| | Charge | Sessions |
+|---|---|---|
+| **Use when** | Single API calls, infrequent requests | High-frequency requests, streaming, agent orchestration |
+| **On-chain txns** | 1 per request | 2 total (open + close) |
+| **Latency per request** | Full settlement pipeline | Microseconds (local voucher verification) |
+| **Buyer setup** | Wallet + USDC | Swig smart wallet (provisioned via `onboard()`) |
+
 ## Architecture
 
 Three actors:
@@ -41,12 +56,25 @@ Three actors:
 - **Seller** — runs server with `charge({ recipient })`. Needs zero blockchain infra.
 - **Dexter (facilitator)** — co-signs as fee payer, broadcasts, confirms on-chain.
 
+### Charge flow (one-shot)
+
 ```
 Client → Seller Server → Dexter /mpp/prepare (get feePayer + blockhash)
                        ← 402 Challenge
 Client builds + partially signs TransferChecked tx
 Client → Seller Server → Dexter /mpp/settle (full settlement pipeline)
                        ← Receipt with tx signature
+```
+
+### Session flow (streaming)
+
+```
+Buyer Agent → Dexter /api/sessions/onboard       (provision Swig wallet + role)
+Buyer Agent → Dexter /mpp/session/open            (create channel, deposit USDC)
+  loop:
+    Buyer Agent → Dexter /mpp/session/voucher     (get signed voucher, off-chain)
+    Buyer Agent → Seller Server + x-mpp-voucher   (seller verifies locally, μs)
+Buyer Agent → Dexter /mpp/session/close           (settle to seller, refund buyer)
 ```
 
 ## Server Integration
@@ -164,11 +192,133 @@ const response = await mppx.fetch('https://api.example.com/paid-endpoint');
 | `computeUnitLimit` | no | `50000` | Compute unit limit |
 | `onProgress` | no | — | Callback: `building`, `signing`, `signed` events |
 
+## Session Server Integration
+
+### Accepting session payments
+
+```typescript
+import { createSessionServer } from '@dexterai/mpp/server/session';
+
+const sessions = createSessionServer({
+  recipient: 'YourSolanaWalletAddress',
+  pricePerUnit: '10000', // 0.01 USDC per request
+});
+
+app.get('/api/data', async (req, res) => {
+  const voucher = req.headers['x-mpp-voucher'];
+  if (!voucher) {
+    return res.status(402).json(sessions.getChallenge());
+  }
+
+  const result = sessions.verifyVoucher(JSON.parse(voucher));
+  if (!result.valid) {
+    return res.status(402).json({ error: result.error });
+  }
+
+  res.json({ data: '...' });
+});
+```
+
+### Session server parameters
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `recipient` | **yes** | — | Solana wallet that receives payments |
+| `pricePerUnit` | **yes** | — | Price per unit in atomic USDC |
+| `apiUrl` | no | `https://x402.dexter.cash` | Dexter API URL |
+| `network` | no | `mainnet-beta` | Solana network |
+| `meter` | no | `request` | Usage label |
+| `suggestedDeposit` | no | 100x pricePerUnit | Suggested deposit for buyers |
+
+### Voucher verification details
+
+`verifyVoucher()` returns `{ valid, error?, voucher?, amountPaid? }`:
+- Checks Ed25519 signature type
+- Validates recipient matches
+- Enforces monotonic cumulative amounts (rejects replay/rollback)
+- Enforces monotonic sequence numbers
+- Detects signer changes mid-session
+- Checks payment amount covers pricePerUnit x units
+
+## Session Client Integration
+
+### Full lifecycle: onboard → open → pay → close
+
+```typescript
+import { createSessionClient } from '@dexterai/mpp/client/session';
+
+const session = createSessionClient({
+  buyerWallet: 'YourWallet...',
+  buyerSwigAddress: 'YourSwigWallet...',
+});
+
+// Onboard: provision Swig wallet (only needed once per buyer)
+// Requires both transaction signing and message signing (for wallet ownership proof)
+await session.onboard({
+  signTransaction: async (txBase64) => {
+    // Sign with your preferred library
+    return signedTxBase64;
+  },
+  signMessage: async (message) => {
+    // Sign raw message bytes (CAIP-122 / SIWS wallet ownership proof)
+    return signatureBytes;
+  },
+  publicKey: 'YourPublicKeyBase58...',
+});
+// Or with @solana/kit v2 (handles both automatically):
+// await session.onboard({ signer: await generateKeyPair() });
+
+// Open session
+const channel = await session.open({
+  seller: 'SellerWallet...',
+  deposit: '1000000', // 1 USDC
+});
+
+// Pay per request
+for (const item of workload) {
+  const voucher = await session.pay(channel.channel_id, {
+    amount: String(cumulative),
+    serverNonce: nonceFromSeller,
+  });
+  const res = await fetch(sellerUrl, {
+    headers: { 'x-mpp-voucher': JSON.stringify(voucher) },
+  });
+}
+
+// Close — settle and refund
+const result = await session.close(channel.channel_id);
+```
+
+### Session client parameters
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `buyerWallet` | **yes** | — | Buyer's Solana wallet address |
+| `buyerSwigAddress` | **yes** | — | Buyer's Swig smart wallet address |
+| `apiUrl` | no | `https://x402.dexter.cash` | Dexter API URL |
+| `network` | no | `mainnet-beta` | Solana network |
+| `onProgress` | no | — | Lifecycle events: `opening`, `opened`, `voucher`, `closing`, `closed` |
+
+### Onboard options
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `signer` | one of | — | `@solana/kit` CryptoKeyPair (preferred — handles tx + message signing) |
+| `signTransaction` | one of | — | Callback: base64 in → signed base64 out (for onboard transactions) |
+| `signMessage` | with callbacks | — | Callback: Uint8Array in → Uint8Array out (for SIWS wallet ownership proof) |
+| `publicKey` | with callbacks | — | Buyer's public key (base58) — required with signMessage |
+| `spendLimit` | no | 100 USDC | USDC spend limit in atomic units |
+| `ttlSeconds` | no | 24 hours | Role time-to-live |
+
+The onboard endpoint requires CAIP-122 (SIWS) wallet ownership proof. The SDK constructs and sends this automatically. With `signer`, both transaction and message signing are handled. With callbacks, you must provide all three: `signTransaction`, `signMessage`, and `publicKey`.
+
 ## Settlement API
 
 Open endpoints on the facilitator. No auth required.
 
-### POST /mpp/prepare
+### Charge Endpoints
+
+#### POST /mpp/prepare
 
 Returns fee payer info and blockhash for challenge generation.
 
@@ -187,7 +337,7 @@ Returns fee payer info and blockhash for challenge generation.
 }
 ```
 
-### POST /mpp/settle
+#### POST /mpp/settle
 
 Full settlement: validate, co-sign, simulate, broadcast, confirm.
 
@@ -217,6 +367,127 @@ Full settlement: validate, co-sign, simulate, broadcast, confirm.
   }
 }
 ```
+
+### Session Endpoints
+
+#### POST /mpp/session/open
+
+Open a payment channel.
+
+**Request:**
+```json
+{
+  "buyer_wallet": "BuyerWallet...",
+  "buyer_swig_address": "SwigWallet...",
+  "seller_wallet": "SellerWallet...",
+  "deposit_atomic": "1000000",
+  "network": "mainnet-beta"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "channel_id": "ch_abc123",
+  "session_pubkey": "SessionKey...",
+  "deposit_atomic": "1000000",
+  "network": "mainnet-beta",
+  "channel_program": "swigypWHEksbC64pWKwah1WTeh9JXwx8H1rJHLdbQMB"
+}
+```
+
+#### POST /mpp/session/voucher
+
+Sign a voucher for a payment within an active channel.
+
+**Request:**
+```json
+{
+  "channel_id": "ch_abc123",
+  "amount": "10000",
+  "meter": "request",
+  "units": "1",
+  "serverNonce": "uuid-from-seller"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "voucher": {
+    "channelId": "ch_abc123",
+    "payer": "BuyerWallet",
+    "recipient": "SellerWallet",
+    "cumulativeAmount": "10000",
+    "sequence": 1,
+    "meter": "request",
+    "units": "1",
+    "serverNonce": "uuid-from-seller",
+    "chainId": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+    "channelProgram": "swigypWHEksbC64pWKwah1WTeh9JXwx8H1rJHLdbQMB"
+  },
+  "signature": "ed25519-signature-base64",
+  "signer": "SessionPubkey...",
+  "signatureType": "ed25519"
+}
+```
+
+#### POST /mpp/session/close
+
+Close a channel — settle to seller, refund remainder.
+
+**Request:** `{ "channel_id": "ch_abc123" }`
+
+**Response:**
+```json
+{
+  "success": true,
+  "channel_id": "ch_abc123",
+  "settlement": {
+    "seller": "SellerWallet",
+    "amount_settled": "50000",
+    "buyer_refund": "950000",
+    "voucher_count": 5,
+    "session_duration_seconds": 120
+  }
+}
+```
+
+#### POST /api/sessions/onboard
+
+Provision a Swig smart wallet and grant a delegated session role.
+
+**Requires:** `SIGN-IN-WITH-X` header (CAIP-122 / SIWS wallet ownership proof). The SDK constructs this automatically in `onboard()`.
+
+**Request:** `{ "buyer_wallet": "BuyerWallet...", "spend_limit_atomic": "100000000", "ttl_seconds": 86400 }`
+
+**Response (ready):** `{ "status": "ready", "swig_address": "...", "role_id": 42 }`
+
+**Response (needs transactions):**
+```json
+{
+  "status": "transactions_required",
+  "swig_address": "...",
+  "transactions": [
+    { "type": "create_swig", "tx": "base64..." },
+    { "type": "grant_role", "tx": "base64..." }
+  ]
+}
+```
+
+#### POST /api/sessions/onboard/confirm
+
+Submit signed onboarding transactions.
+
+**Request:** `{ "buyer_wallet": "...", "signed_transactions": ["base64...", "base64..."] }`
+
+#### GET /api/sessions/onboard/status?buyer_wallet=...
+
+Check onboarding status: `not_onboarded`, `pending`, `active`, `expired`, `revoked`.
+
+**Requires:** `SIGN-IN-WITH-X` header.
 
 ## Critical Constraints
 
@@ -250,8 +521,10 @@ Full settlement: validate, co-sign, simulate, broadcast, confirm.
   src/
     methods.ts                  # Method.from schema (name: "dexter", intent: "charge")
     server/charge.ts            # Method.toServer — delegates to Dexter API
+    server/session.ts           # createSessionServer — accept streaming session payments
     client/charge.ts            # Method.toClient — builds TransferChecked txs
-    api.ts                      # DexterSettlementClient + SettlementError
+    client/session.ts           # createSessionClient — open/pay/close lifecycle + onboard
+    api.ts                      # DexterSettlementClient + SettlementError + session types
     constants.ts                # USDC mints, token programs
     index.ts                    # Barrel export for root import
   examples/
@@ -260,10 +533,17 @@ Full settlement: validate, co-sign, simulate, broadcast, confirm.
     client-headless/            # Agent client with progress events
     client-with-verification/   # Seller with on-chain RPC verification
   test/
+    api.test.ts                 # DexterSettlementClient charge methods
+    api-session.test.ts         # DexterSettlementClient session methods
+    server-charge.test.ts       # Server charge method
+    server-session.test.ts      # Session server (voucher verification, monotonic enforcement)
+    client-session.test.ts      # Session client (lifecycle, onboarding, progress events)
+    methods.test.ts             # Method schema definitions
+    e2e.test.ts                 # E2E mock Dexter server
     devnet-e2e.ts               # Real payment on Solana devnet
 
 ~/websites/dexter-facilitator/  # Facilitator repo
-  src/mpp.ts                    # /mpp/prepare and /mpp/settle endpoints
+  src/mpp.ts                    # /mpp/prepare, /mpp/settle, /mpp/session/* endpoints
 ```
 
 ## Devnet Testing

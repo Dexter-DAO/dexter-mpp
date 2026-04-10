@@ -9,5 +9,6 @@ export type {
   SessionOpenRequest, SessionOpenResponse,
   SessionVoucherRequest, SessionVoucherResponse,
   SessionCloseRequest, SessionCloseResponse,
+  SessionOnboardResponse, SessionOnboardConfirmResponse, SessionOnboardStatusResponse,
 } from "./api.js";
 export { USDC_MINTS, TOKEN_PROGRAM, TOKEN_2022_PROGRAM, DEFAULT_DEXTER_API_URL } from "./constants.js";

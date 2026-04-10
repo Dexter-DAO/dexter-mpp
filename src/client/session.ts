@@ -3,6 +3,11 @@ import {
   partiallySignTransaction,
   getBase64EncodedWireTransaction,
 } from "@solana/kit";
+import {
+  createSIWxPayload,
+  encodeSIWxHeader,
+  type SolanaSigner,
+} from "@x402/extensions/sign-in-with-x";
 import { DexterSettlementClient, SettlementError } from "../api.js";
 import { DEFAULT_DEXTER_API_URL } from "../constants.js";
 import type {
@@ -236,12 +241,12 @@ export function createSessionClient(params: SessionClientParameters) {
      * This method handles both automatically.
      *
      * Accepts either a `signer` (kit v2 CryptoKeyPair — preferred) or
-     * a `signTransaction` callback (escape hatch for web3.js, hardware
-     * wallets, MPC signers, etc.). Provide one or the other.
+     * callbacks for transaction and message signing. Message signing is
+     * required for wallet ownership proof (CAIP-122 / SIWS).
      *
      * @example
      * ```ts
-     * // With @solana/kit v2 (preferred):
+     * // With @solana/kit v2 (preferred — handles everything):
      * import { generateKeyPair } from '@solana/kit';
      * const signer = await generateKeyPair();
      *
@@ -249,6 +254,7 @@ export function createSessionClient(params: SessionClientParameters) {
      *
      * // With @solana/web3.js v1:
      * import { Keypair, VersionedTransaction } from '@solana/web3.js';
+     * import nacl from 'tweetnacl';
      * const keypair = Keypair.generate();
      *
      * await session.onboard({
@@ -257,14 +263,22 @@ export function createSessionClient(params: SessionClientParameters) {
      *     tx.sign([keypair]);
      *     return Buffer.from(tx.serialize()).toString('base64');
      *   },
+     *   signMessage: async (message) => {
+     *     return nacl.sign.detached(message, keypair.secretKey);
+     *   },
+     *   publicKey: keypair.publicKey.toBase58(),
      * });
      * ```
      */
     async onboard(opts: {
-      /** Kit v2 CryptoKeyPair — preferred signing path */
+      /** Kit v2 CryptoKeyPair — preferred, handles both tx and message signing */
       signer?: CryptoKeyPair;
-      /** Escape hatch — any signing mechanism (base64 in, base64 out) */
+      /** Escape hatch for transaction signing (base64 in, base64 out) */
       signTransaction?: (unsignedTxBase64: string) => Promise<string>;
+      /** Message signing for wallet ownership proof (SIWS/CAIP-122) */
+      signMessage?: (message: Uint8Array) => Promise<Uint8Array>;
+      /** Public key (base58) — required when using signMessage callback */
+      publicKey?: string;
       /** Override buyer wallet address (defaults to the one from createSessionClient) */
       buyerWallet?: string;
       /** USDC spend limit in atomic units (default: 100 USDC) */
@@ -283,9 +297,23 @@ export function createSessionClient(params: SessionClientParameters) {
         );
       }
 
+      if (!opts.signer && !opts.signMessage) {
+        throw new SettlementError(
+          "onboard_no_message_signer",
+          "Provide either 'signer' (CryptoKeyPair) or 'signMessage' callback for wallet ownership proof",
+        );
+      }
+
+      if (opts.signMessage && !opts.publicKey) {
+        throw new SettlementError(
+          "onboard_no_public_key",
+          "'publicKey' (base58) is required when using 'signMessage' callback",
+        );
+      }
+
       const wallet = opts.buyerWallet ?? buyerWallet;
 
-      // Build the signing function from whichever option was provided
+      // Build the transaction signing function
       const sign = opts.signer
         ? async (txBase64: string): Promise<string> => {
             const txBytes = Buffer.from(txBase64, 'base64');
@@ -296,13 +324,62 @@ export function createSessionClient(params: SessionClientParameters) {
           }
         : opts.signTransaction!;
 
+      // Build the SIWx header for wallet ownership proof (CAIP-122 / SIWS)
+      const solanaChainId = network === "devnet"
+        ? "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
+        : "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
+
+      const baseUrl = apiUrl ?? DEFAULT_DEXTER_API_URL;
+      const apiDomain = new URL(baseUrl).hostname;
+
+      // Build a WalletAdapterSigner-compatible signer for SIWx.
+      // Both paths produce the same interface: signMessage(Uint8Array) → Uint8Array
+      const siwxSigner: SolanaSigner = opts.signer
+        ? {
+            signMessage: async (message: Uint8Array): Promise<Uint8Array> => {
+              const data = new Uint8Array(message).buffer as ArrayBuffer;
+              const signature = await crypto.subtle.sign(
+                "Ed25519",
+                (opts.signer as CryptoKeyPair).privateKey,
+                data,
+              );
+              return new Uint8Array(signature);
+            },
+            publicKey: wallet,
+          }
+        : {
+            signMessage: async (message: Uint8Array): Promise<Uint8Array> => {
+              return opts.signMessage!(message);
+            },
+            publicKey: opts.publicKey!,
+          };
+
+      const nonce = crypto.randomUUID().replace(/-/g, "");
+      const now = new Date();
+      const siwxPayload = await createSIWxPayload(
+        {
+          domain: apiDomain,
+          uri: `https://${apiDomain}/api/sessions/onboard`,
+          version: "1",
+          chainId: solanaChainId,
+          type: "ed25519",
+          signatureScheme: "siws",
+          nonce,
+          issuedAt: now.toISOString(),
+          expirationTime: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
+        },
+        siwxSigner,
+      );
+
+      const siwxHeader = encodeSIWxHeader(siwxPayload);
+
       // May need two rounds for needs_swig (create wallet, then grant role)
       for (let round = 0; round < 2; round++) {
         const result: SessionOnboardResponse = await client.sessionOnboard({
           buyer_wallet: wallet,
           spend_limit_atomic: opts.spendLimit,
           ttl_seconds: opts.ttlSeconds,
-        });
+        }, siwxHeader);
 
         if (result.status === 'ready') {
           return {
@@ -336,7 +413,7 @@ export function createSessionClient(params: SessionClientParameters) {
         const confirmed = await client.sessionOnboardConfirm({
           buyer_wallet: wallet,
           signed_transactions: signedTransactions,
-        });
+        }, siwxHeader);
 
         if (confirmed.status === 'ready') {
           return {

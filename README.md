@@ -22,11 +22,16 @@
 
 An [MPP](https://mpp.dev) payment method that lets any seller accept Solana USDC payments through the Machine Payments Protocol — with Dexter handling all settlement infrastructure.
 
+Two payment modes:
+- **Charge** — one-shot payments. One on-chain transaction per API call.
+- **Sessions** — streaming micropayments. Deposit once, pay per-request with signed vouchers (off-chain, microseconds), settle on-chain only at close. 10,000 API calls = 2 transactions.
+
 Sellers install this package and get:
 - **Zero blockchain operations.** No RPC connections, no fee payer wallets, no SOL for gas. Dexter handles co-signing, simulation, broadcast, and confirmation.
 - **Gas-free for buyers.** Dexter sponsors all transaction fees. Buyers only need USDC and a Solana wallet.
 - **Production-grade settlement.** The same security validation, backpressure controls, and smart wallet support that powers 50% of daily x402 transactions — now available as an MPP method.
 - **Standard MPP protocol.** Works with any `mppx` client. Supports HTTP and MCP transports.
+- **Buyer onboarding.** One-call Swig smart wallet provisioning for session-capable agents.
 
 The method name is `dexter`. Clients that support custom MPP methods will discover and use it automatically.
 
@@ -189,17 +194,202 @@ Works with:
 
 ---
 
+## Sessions — Streaming Micropayments
+
+One-shot charge works for individual API calls. But if an agent is making hundreds or thousands of requests in a session — streaming tokens, polling data, orchestrating multi-step workflows — paying per-call means an on-chain transaction every time.
+
+Sessions fix this. The buyer deposits once, pays per-request with signed vouchers (off-chain, microseconds), and settles on-chain only when the session closes. 10,000 API calls = 2 on-chain transactions instead of 10,000.
+
+```
+Buyer Agent             Seller Server                 Dexter                    Solana
+  │                         │                           │                         │
+  │  onboard()              │                           │                         │
+  │────────────────────────────────────────────────────>│  provision Swig wallet  │
+  │                         │                           │  grant session role ───>│
+  │  { swigAddress, roleId }│                           │<────────────────────────│
+  │<────────────────────────────────────────────────────│                         │
+  │                         │                           │                         │
+  │  open(seller, deposit)  │                           │                         │
+  │────────────────────────────────────────────────────>│  create channel         │
+  │                         │                           │  deposit USDC ─────────>│
+  │  { channelId }          │                           │                         │
+  │<────────────────────────────────────────────────────│                         │
+  │                         │                           │                         │
+  │  GET /api/data          │                           │                         │
+  │────────────────────────>│                           │                         │
+  │  402 + session challenge│                           │                         │
+  │<────────────────────────│                           │                         │
+  │                         │                           │                         │
+  │  pay(channelId, amount) │                           │                         │
+  │────────────────────────────────────────────────────>│  sign voucher           │
+  │  { voucher, signature } │                           │  (no chain interaction) │
+  │<────────────────────────────────────────────────────│                         │
+  │                         │                           │                         │
+  │  GET /api/data          │                           │                         │
+  │  + x-mpp-voucher header │                           │                         │
+  │────────────────────────>│  verifyVoucher()          │                         │
+  │                         │  (local Ed25519, μs)      │                         │
+  │  200 + data             │                           │                         │
+  │<────────────────────────│                           │                         │
+  │                         │                           │                         │
+  │         ... repeat pay → request → verify ...       │                         │
+  │                         │                           │                         │
+  │  close(channelId)       │                           │                         │
+  │────────────────────────────────────────────────────>│  settle final voucher  │
+  │                         │                           │  refund remainder ─────>│
+  │  { settled, refund }    │                           │<────────────────────────│
+  │<────────────────────────────────────────────────────│                         │
+```
+
+### Session Server
+
+Accept streaming micropayments on any endpoint:
+
+```typescript
+import { createSessionServer } from '@dexterai/mpp/server/session';
+
+const sessions = createSessionServer({
+  recipient: 'YourSolanaWalletAddress...',
+  pricePerUnit: '10000', // 0.01 USDC per request
+  meter: 'api_calls',    // usage label
+});
+
+app.get('/api/data', async (req, res) => {
+  const voucher = req.headers['x-mpp-voucher'];
+  if (!voucher) {
+    // No voucher — return 402 challenge telling the buyer how to open a session
+    return res.status(402).json(sessions.getChallenge());
+  }
+
+  const result = sessions.verifyVoucher(JSON.parse(voucher));
+  if (!result.valid) {
+    return res.status(402).json({ error: result.error });
+  }
+
+  // Paid — result.amountPaid is the delta for this request
+  res.json({ data: 'your paid content', paid: result.amountPaid });
+});
+```
+
+The seller's server never touches the Solana network. `verifyVoucher()` checks the Ed25519 signature, enforces monotonic cumulative amounts and sequences, detects underpayment, and rejects signer changes — all locally in microseconds.
+
+#### Session Server Options
+
+```typescript
+createSessionServer({
+  recipient: string;         // Required. Solana wallet that receives payments.
+  pricePerUnit: string;      // Required. Price per unit in atomic USDC (e.g., "10000" = 0.01 USDC).
+  apiUrl?: string;           // Dexter API URL. Default: https://x402.dexter.cash
+  network?: string;          // Solana network. Default: mainnet-beta
+  meter?: string;            // Usage label (e.g., "api_calls", "tokens"). Default: "request"
+  suggestedDeposit?: string; // Suggested deposit in atomic USDC. Default: 100x pricePerUnit.
+})
+```
+
+### Session Client
+
+Full lifecycle for buyer agents — open, pay, close:
+
+```typescript
+import { createSessionClient } from '@dexterai/mpp/client/session';
+
+const session = createSessionClient({
+  buyerWallet: 'YourWallet...',
+  buyerSwigAddress: 'YourSwigWallet...',
+  onProgress: (event) => console.log(event.type, event),
+});
+
+// 1. Open a session with a seller
+const channel = await session.open({
+  seller: 'SellerWallet...',
+  deposit: '1000000', // 1 USDC
+});
+
+// 2. Pay for each API call (voucher signed by Dexter, returned instantly)
+const voucher = await session.pay(channel.channel_id, {
+  amount: '10000',         // 0.01 USDC cumulative
+  serverNonce: nonceFromSeller,
+});
+
+// 3. Include voucher in request to seller
+const response = await fetch('https://api.seller.com/data', {
+  headers: { 'x-mpp-voucher': JSON.stringify(voucher) },
+});
+
+// 4. Close when done — Dexter settles to seller, refunds remainder to buyer
+const settlement = await session.close(channel.channel_id);
+// settlement.amount_settled = what the seller received
+// settlement.buyer_refund = what the buyer got back
+```
+
+#### Session Client Options
+
+```typescript
+createSessionClient({
+  buyerWallet: string;       // Required. Buyer's Solana wallet address.
+  buyerSwigAddress: string;  // Required. Buyer's Swig smart wallet address.
+  apiUrl?: string;           // Dexter API URL. Default: https://x402.dexter.cash
+  network?: string;          // Solana network. Default: mainnet-beta
+  onProgress?: (event) => void; // Session lifecycle events.
+})
+```
+
+Progress events: `opening`, `opened`, `voucher`, `closing`, `closed`.
+
+### Buyer Onboarding
+
+Before opening sessions, a buyer agent needs a Swig smart wallet with a delegated session role. The `onboard()` method handles this automatically — wallet provisioning, role granting, the multi-round flow for new wallets, and wallet ownership proof (CAIP-122 / SIWS).
+
+The onboard endpoint requires the buyer to cryptographically prove they own the wallet being onboarded. `onboard()` constructs and sends this proof automatically using the signer you provide.
+
+```typescript
+// With @solana/kit v2 (preferred — handles everything):
+import { generateKeyPair } from '@solana/kit';
+const signer = await generateKeyPair();
+
+await session.onboard({ signer });
+
+// With @solana/web3.js v1:
+import { Keypair, VersionedTransaction } from '@solana/web3.js';
+import nacl from 'tweetnacl';
+const keypair = Keypair.generate();
+
+await session.onboard({
+  signTransaction: async (txBase64) => {
+    const tx = VersionedTransaction.deserialize(Buffer.from(txBase64, 'base64'));
+    tx.sign([keypair]);
+    return Buffer.from(tx.serialize()).toString('base64');
+  },
+  signMessage: async (message) => {
+    return nacl.sign.detached(message, keypair.secretKey);
+  },
+  publicKey: keypair.publicKey.toBase58(),
+});
+```
+
+`onboard()` returns `{ swigAddress, roleId, status: 'ready' }`. If the buyer already has an active role, it returns immediately. If a new Swig wallet is needed, it handles both rounds (create wallet, then grant role) automatically.
+
+The `signer` path (kit v2 CryptoKeyPair) handles both transaction signing and message signing. The callback path requires three things: `signTransaction` for onboard transactions, `signMessage` for wallet ownership proof, and `publicKey` for address verification.
+
+---
+
 ## Package Exports
 
 ```typescript
 // Shared schema (method name, intent, Zod schemas)
 import { charge } from '@dexterai/mpp';
 
-// Server method (delegates settlement to Dexter API)
+// Server charge method (one-shot, delegates settlement to Dexter API)
 import { charge } from '@dexterai/mpp/server';
 
-// Client method (builds + signs Solana transactions)
+// Client charge method (builds + signs Solana transactions)
 import { charge } from '@dexterai/mpp/client';
+
+// Server session handler (accept streaming micropayments)
+import { createSessionServer } from '@dexterai/mpp/server/session';
+
+// Client session manager (open → pay → close lifecycle)
+import { createSessionClient } from '@dexterai/mpp/client/session';
 
 // HTTP client and types (for direct API access)
 import { DexterSettlementClient, SettlementError } from '@dexterai/mpp/api';
@@ -214,14 +404,27 @@ import { USDC_MINTS, TOKEN_PROGRAM, DEFAULT_DEXTER_API_URL } from '@dexterai/mpp
 
 The settlement endpoints are open — no API keys, no accounts. Backpressure is tracked per recipient wallet address.
 
+### Charge Endpoints
+
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/mpp/prepare` | Returns fee payer pubkey, recent blockhash, lastValidBlockHeight, and token config |
 | POST | `/mpp/settle` | Full settlement: validate, co-sign, simulate, broadcast, confirm |
 
+### Session Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/mpp/session/open` | Open a payment channel — creates channel, deposits USDC into escrow |
+| POST | `/mpp/session/voucher` | Sign a voucher for a cumulative payment within an active channel |
+| POST | `/mpp/session/close` | Close a channel — settle to seller, refund remainder to buyer |
+| POST | `/api/sessions/onboard` | Provision a Swig smart wallet and grant a delegated session role. Requires `SIGN-IN-WITH-X` header. |
+| POST | `/api/sessions/onboard/confirm` | Submit signed onboarding transactions for co-signing and broadcast |
+| GET | `/api/sessions/onboard/status` | Check onboarding status for a buyer wallet. Requires `SIGN-IN-WITH-X` header. |
+
 Settlement errors include typed error codes (e.g., `policy:program_not_allowed`, `no_transfer_instruction`, backpressure codes). The `SettlementError` class from `@dexterai/mpp/api` preserves these for programmatic handling.
 
-Production: **https://x402.dexter.cash/mpp/**
+Production: **https://x402.dexter.cash**
 
 These endpoints run on the same infrastructure as Dexter's x402 facilitator — the same security validation, backpressure controls, and Sentry observability.
 
@@ -262,6 +465,8 @@ The [Solana MPP SDK](https://github.com/solana-foundation/solana-mpp-sdk) lets y
 
 ## Security Model
 
+### Charge (one-shot)
+
 Dexter managed settlement is a trust-delegated model — similar to using Stripe for card payments. The seller trusts Dexter to settle payments correctly.
 
 Two verification layers protect against facilitator bugs:
@@ -269,6 +474,20 @@ Two verification layers protect against facilitator bugs:
 1. **Settlement proof (default):** Every successful settlement response includes the verified `recipient`, `amount`, `asset`, and `feePayer`. The SDK checks these match the original challenge before issuing a receipt.
 
 2. **On-chain verification (opt-in):** Pass `verifyRpcUrl` to independently fetch and verify the transaction on-chain after settlement. Adds ~1-2s latency but is fully trustless.
+
+### Sessions (non-custodial)
+
+Sessions use Swig smart wallets for non-custodial delegation. Dexter never has custody of buyer funds.
+
+- The buyer creates a Swig wallet, deposits USDC, and grants Dexter a **scoped role** with on-chain enforced constraints: spend limit, TTL, and program restrictions.
+- The buyer can **revoke Dexter's role at any time** directly on-chain.
+- If Dexter disappears, the buyer is never locked out — they revoke the role and withdraw from their Swig wallet directly.
+- If the seller disappears mid-session, there is a grace period after which the remaining deposit is refunded to the buyer.
+- Refunds always route directly to the buyer's wallet, never through Dexter.
+
+Vouchers are Ed25519-signed messages verified locally by the seller — no network calls, no Dexter involvement in the per-request verification.
+
+### General
 
 The settlement API is HTTPS in production (`https://x402.dexter.cash`). In local development over HTTP, ensure your network is trusted.
 

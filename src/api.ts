@@ -330,12 +330,15 @@ export class DexterSettlementClient {
     buyer_wallet: string;
     spend_limit_atomic?: string;
     ttl_seconds?: number;
-  }): Promise<SessionOnboardResponse> {
+  }, siwxHeader?: string): Promise<SessionOnboardResponse> {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (siwxHeader) headers["SIGN-IN-WITH-X"] = siwxHeader;
+
     const res = await this.fetchWithTimeout(
       `${this.baseUrl}/api/sessions/onboard`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify(params),
       },
       this.settleTimeoutMs,
@@ -354,12 +357,15 @@ export class DexterSettlementClient {
   async sessionOnboardConfirm(params: {
     buyer_wallet: string;
     signed_transactions: string[];
-  }): Promise<SessionOnboardConfirmResponse> {
+  }, siwxHeader?: string): Promise<SessionOnboardConfirmResponse> {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (siwxHeader) headers["SIGN-IN-WITH-X"] = siwxHeader;
+
     const res = await this.fetchWithTimeout(
       `${this.baseUrl}/api/sessions/onboard/confirm`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify(params),
       },
       this.settleTimeoutMs,
@@ -375,12 +381,15 @@ export class DexterSettlementClient {
     return data as SessionOnboardConfirmResponse;
   }
 
-  async sessionOnboardStatus(buyer_wallet: string): Promise<SessionOnboardStatusResponse> {
+  async sessionOnboardStatus(buyer_wallet: string, siwxHeader?: string): Promise<SessionOnboardStatusResponse> {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (siwxHeader) headers["SIGN-IN-WITH-X"] = siwxHeader;
+
     const res = await this.fetchWithTimeout(
       `${this.baseUrl}/api/sessions/onboard/status?buyer_wallet=${encodeURIComponent(buyer_wallet)}`,
       {
         method: "GET",
-        headers: { "Content-Type": "application/json" },
+        headers,
       },
       this.prepareTimeoutMs,
     );
