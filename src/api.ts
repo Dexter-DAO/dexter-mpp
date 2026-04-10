@@ -72,6 +72,38 @@ export class SettlementError extends Error {
 
 // ── Session Types ──────────────────────────────────────────────────────────
 
+export interface SessionOnboardResponse {
+  status: 'ready' | 'transactions_required' | 'not_eligible';
+  swig_address: string;
+  transactions?: Array<{ type: string; instruction_count: number }>;
+  role_details?: {
+    spend_limit_atomic: string;
+    ttl_seconds: number;
+    dexter_session_pubkey: string;
+    programs: string[];
+  };
+  role_id?: number;
+  spend_limit_remaining?: string;
+}
+
+export interface SessionOnboardConfirmResponse {
+  status: string;
+  swig_address?: string;
+  role_id?: number;
+  onboard_tx_signatures?: string[];
+  id?: string;
+  message?: string;
+}
+
+export interface SessionOnboardStatusResponse {
+  buyer_wallet: string;
+  swig_address: string | null;
+  role_id: number | null;
+  status: 'not_onboarded' | 'pending' | 'active' | 'expired' | 'revoked';
+  spend_limit_atomic: string | null;
+  role_expires_at: string | null;
+}
+
 export type SessionOpenRequest = {
   buyer_wallet: string;
   buyer_swig_address: string;
@@ -290,6 +322,75 @@ export class DexterSettlementClient {
       );
     }
     return data as SessionCloseResponse;
+  }
+
+  async sessionOnboard(params: {
+    buyer_wallet: string;
+    spend_limit_atomic?: string;
+    ttl_seconds?: number;
+  }): Promise<SessionOnboardResponse> {
+    const res = await this.fetchWithTimeout(
+      `${this.baseUrl}/api/sessions/onboard`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      },
+      this.settleTimeoutMs,
+    );
+
+    const data = await res.json();
+    if (!res.ok) {
+      throw new SettlementError(
+        data.error ?? "onboard_failed",
+        data.detail ?? data.error ?? "Session onboard failed",
+      );
+    }
+    return data as SessionOnboardResponse;
+  }
+
+  async sessionOnboardConfirm(params: {
+    buyer_wallet: string;
+    signed_transactions: string[];
+  }): Promise<SessionOnboardConfirmResponse> {
+    const res = await this.fetchWithTimeout(
+      `${this.baseUrl}/api/sessions/onboard/confirm`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      },
+      this.settleTimeoutMs,
+    );
+
+    const data = await res.json();
+    if (!res.ok) {
+      throw new SettlementError(
+        data.error ?? "onboard_confirm_failed",
+        data.detail ?? data.error ?? "Session onboard confirm failed",
+      );
+    }
+    return data as SessionOnboardConfirmResponse;
+  }
+
+  async sessionOnboardStatus(buyer_wallet: string): Promise<SessionOnboardStatusResponse> {
+    const res = await this.fetchWithTimeout(
+      `${this.baseUrl}/api/sessions/onboard/status?buyer_wallet=${encodeURIComponent(buyer_wallet)}`,
+      {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+      },
+      this.prepareTimeoutMs,
+    );
+
+    const data = await res.json();
+    if (!res.ok) {
+      throw new SettlementError(
+        data.error ?? "onboard_status_failed",
+        data.detail ?? data.error ?? "Session onboard status failed",
+      );
+    }
+    return data as SessionOnboardStatusResponse;
   }
 
   private async fetchWithTimeout(

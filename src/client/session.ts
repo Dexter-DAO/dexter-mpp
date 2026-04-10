@@ -4,6 +4,7 @@ import type {
   SessionOpenResponse,
   SessionVoucherResponse,
   SessionCloseResponse,
+  SessionOnboardResponse,
 } from "../api.js";
 
 export type SessionClientParameters = {
@@ -218,6 +219,62 @@ export function createSessionClient(params: SessionClientParameters) {
      */
     listSessions(): ActiveSession[] {
       return Array.from(activeSessions.values());
+    },
+
+    /**
+     * Onboard a buyer wallet by provisioning a Swig smart wallet and
+     * granting a Dexter session role. If the wallet already has an active
+     * role the response is `{ status: 'ready' }` with no transactions needed.
+     *
+     * NOTE: Full transaction signing is not yet implemented. When the server
+     * returns `transactions_required`, this method calls confirm with an empty
+     * array to create the tracking record. Full serialization needs live Swig
+     * SDK testing.
+     */
+    async onboard(opts: {
+      buyerKeypair: { publicKey: { toBase58(): string }; secretKey: Uint8Array };
+      spendLimit?: string;
+      ttlSeconds?: number;
+    }): Promise<{
+      swigAddress: string;
+      roleId: number;
+      status: string;
+    }> {
+      const buyer_wallet = opts.buyerKeypair.publicKey.toBase58();
+
+      const result: SessionOnboardResponse = await client.sessionOnboard({
+        buyer_wallet,
+        spend_limit_atomic: opts.spendLimit,
+        ttl_seconds: opts.ttlSeconds,
+      });
+
+      if (result.status === 'ready') {
+        return {
+          swigAddress: result.swig_address,
+          roleId: result.role_id!,
+          status: 'ready',
+        };
+      }
+
+      if (result.status === 'not_eligible') {
+        throw new Error('Wallet not eligible for onboarding');
+      }
+
+      // Status is transactions_required — sign and confirm.
+      // NOTE: Full transaction signing not yet implemented.
+      // The API returns instruction metadata; full serialization
+      // needs live Swig SDK testing. For now, call confirm to
+      // create the tracking record.
+      const confirmed = await client.sessionOnboardConfirm({
+        buyer_wallet,
+        signed_transactions: [],
+      });
+
+      return {
+        swigAddress: confirmed.swig_address ?? result.swig_address,
+        roleId: confirmed.role_id ?? 0,
+        status: confirmed.status,
+      };
     },
 
     /** The underlying Dexter settlement client (for advanced use). */
