@@ -223,16 +223,39 @@ export function createSessionClient(params: SessionClientParameters) {
 
     /**
      * Onboard a buyer wallet by provisioning a Swig smart wallet and
-     * granting a Dexter session role. If the wallet already has an active
-     * role the response is `{ status: 'ready' }` with no transactions needed.
+     * granting Dexter a delegated session role. If the wallet already
+     * has an active role, returns immediately with `status: 'ready'`.
      *
-     * NOTE: Full transaction signing is not yet implemented. When the server
-     * returns `transactions_required`, this method calls confirm with an empty
-     * array to create the tracking record. Full serialization needs live Swig
-     * SDK testing.
+     * For `needs_swig` buyers (no Swig wallet), onboarding requires
+     * two rounds: first to create the wallet, second to grant the role.
+     * This method handles both automatically.
+     *
+     * @param opts.buyerWallet — Buyer's Solana address (base58)
+     * @param opts.signTransaction — Callback that signs a base64 unsigned transaction
+     *   and returns the signed base64. The SDK is agnostic to which Solana library
+     *   the agent uses (@solana/web3.js, @solana/kit, etc.).
+     * @param opts.spendLimit — USDC spend limit in atomic units (default: 100 USDC)
+     * @param opts.ttlSeconds — Role TTL in seconds (default: 24 hours)
+     *
+     * @example
+     * ```ts
+     * // With @solana/web3.js v1:
+     * import { Keypair, VersionedTransaction } from '@solana/web3.js';
+     * const keypair = Keypair.generate();
+     *
+     * await session.onboard({
+     *   buyerWallet: keypair.publicKey.toBase58(),
+     *   signTransaction: async (txBase64) => {
+     *     const tx = VersionedTransaction.deserialize(Buffer.from(txBase64, 'base64'));
+     *     tx.sign([keypair]);
+     *     return Buffer.from(tx.serialize()).toString('base64');
+     *   },
+     * });
+     * ```
      */
     async onboard(opts: {
-      buyerKeypair: { publicKey: { toBase58(): string }; secretKey: Uint8Array };
+      buyerWallet?: string;
+      signTransaction: (unsignedTxBase64: string) => Promise<string>;
       spendLimit?: string;
       ttlSeconds?: number;
     }): Promise<{
@@ -240,41 +263,67 @@ export function createSessionClient(params: SessionClientParameters) {
       roleId: number;
       status: string;
     }> {
-      const buyer_wallet = opts.buyerKeypair.publicKey.toBase58();
+      const wallet = opts.buyerWallet ?? buyerWallet;
 
-      const result: SessionOnboardResponse = await client.sessionOnboard({
-        buyer_wallet,
-        spend_limit_atomic: opts.spendLimit,
-        ttl_seconds: opts.ttlSeconds,
-      });
+      // May need two rounds for needs_swig (create wallet, then grant role)
+      for (let round = 0; round < 2; round++) {
+        const result: SessionOnboardResponse = await client.sessionOnboard({
+          buyer_wallet: wallet,
+          spend_limit_atomic: opts.spendLimit,
+          ttl_seconds: opts.ttlSeconds,
+        });
 
-      if (result.status === 'ready') {
-        return {
-          swigAddress: result.swig_address,
-          roleId: result.role_id!,
-          status: 'ready',
-        };
+        if (result.status === 'ready') {
+          return {
+            swigAddress: result.swig_address,
+            roleId: result.role_id!,
+            status: 'ready',
+          };
+        }
+
+        if (result.status === 'not_eligible' || result.status === 'temporarily_unavailable') {
+          throw new SettlementError(
+            "onboard_rejected",
+            `Onboarding rejected: ${result.status}`,
+          );
+        }
+
+        if (result.status !== 'transactions_required' || !result.transactions?.length) {
+          throw new SettlementError(
+            "onboard_unexpected",
+            `Unexpected onboard response: ${result.status}`,
+          );
+        }
+
+        // Sign each transaction using the agent's callback
+        const signedTransactions: string[] = [];
+        for (const txEntry of result.transactions) {
+          const signed = await opts.signTransaction(txEntry.tx);
+          signedTransactions.push(signed);
+        }
+
+        // Submit signed transactions for co-signing and broadcast
+        const confirmed = await client.sessionOnboardConfirm({
+          buyer_wallet: wallet,
+          signed_transactions: signedTransactions,
+        });
+
+        if (confirmed.status === 'ready') {
+          return {
+            swigAddress: confirmed.swig_address ?? result.swig_address,
+            roleId: confirmed.role_id ?? 0,
+            status: 'ready',
+          };
+        }
+
+        // If pending (needs_swig → created wallet, still needs role grant),
+        // loop back for the second round
       }
 
-      if (result.status === 'not_eligible') {
-        throw new Error('Wallet not eligible for onboarding');
-      }
-
-      // Status is transactions_required — sign and confirm.
-      // NOTE: Full transaction signing not yet implemented.
-      // The API returns instruction metadata; full serialization
-      // needs live Swig SDK testing. For now, call confirm to
-      // create the tracking record.
-      const confirmed = await client.sessionOnboardConfirm({
-        buyer_wallet,
-        signed_transactions: [],
-      });
-
-      return {
-        swigAddress: confirmed.swig_address ?? result.swig_address,
-        roleId: confirmed.role_id ?? 0,
-        status: confirmed.status,
-      };
+      throw new SettlementError(
+        "onboard_incomplete",
+        "Onboarding did not complete after 2 rounds — check buyer wallet state",
+      );
     },
 
     /** The underlying Dexter settlement client (for advanced use). */

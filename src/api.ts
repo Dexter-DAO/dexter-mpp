@@ -73,9 +73,11 @@ export class SettlementError extends Error {
 // ── Session Types ──────────────────────────────────────────────────────────
 
 export interface SessionOnboardResponse {
-  status: 'ready' | 'transactions_required' | 'not_eligible';
+  status: 'ready' | 'transactions_required' | 'not_eligible' | 'temporarily_unavailable';
   swig_address: string;
-  transactions?: Array<{ type: string; instruction_count: number }>;
+  transactions?: Array<{ type: string; tx: string }>;
+  expires_at?: string;
+  next_step?: string;
   role_details?: {
     spend_limit_atomic: string;
     ttl_seconds: number;
