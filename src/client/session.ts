@@ -1,3 +1,8 @@
+import {
+  getTransactionDecoder,
+  partiallySignTransaction,
+  getBase64EncodedWireTransaction,
+} from "@solana/kit";
 import { DexterSettlementClient, SettlementError } from "../api.js";
 import { DEFAULT_DEXTER_API_URL } from "../constants.js";
 import type {
@@ -230,21 +235,23 @@ export function createSessionClient(params: SessionClientParameters) {
      * two rounds: first to create the wallet, second to grant the role.
      * This method handles both automatically.
      *
-     * @param opts.buyerWallet — Buyer's Solana address (base58)
-     * @param opts.signTransaction — Callback that signs a base64 unsigned transaction
-     *   and returns the signed base64. The SDK is agnostic to which Solana library
-     *   the agent uses (@solana/web3.js, @solana/kit, etc.).
-     * @param opts.spendLimit — USDC spend limit in atomic units (default: 100 USDC)
-     * @param opts.ttlSeconds — Role TTL in seconds (default: 24 hours)
+     * Accepts either a `signer` (kit v2 CryptoKeyPair — preferred) or
+     * a `signTransaction` callback (escape hatch for web3.js, hardware
+     * wallets, MPC signers, etc.). Provide one or the other.
      *
      * @example
      * ```ts
+     * // With @solana/kit v2 (preferred):
+     * import { generateKeyPair } from '@solana/kit';
+     * const signer = await generateKeyPair();
+     *
+     * await session.onboard({ signer });
+     *
      * // With @solana/web3.js v1:
      * import { Keypair, VersionedTransaction } from '@solana/web3.js';
      * const keypair = Keypair.generate();
      *
      * await session.onboard({
-     *   buyerWallet: keypair.publicKey.toBase58(),
      *   signTransaction: async (txBase64) => {
      *     const tx = VersionedTransaction.deserialize(Buffer.from(txBase64, 'base64'));
      *     tx.sign([keypair]);
@@ -254,16 +261,40 @@ export function createSessionClient(params: SessionClientParameters) {
      * ```
      */
     async onboard(opts: {
+      /** Kit v2 CryptoKeyPair — preferred signing path */
+      signer?: CryptoKeyPair;
+      /** Escape hatch — any signing mechanism (base64 in, base64 out) */
+      signTransaction?: (unsignedTxBase64: string) => Promise<string>;
+      /** Override buyer wallet address (defaults to the one from createSessionClient) */
       buyerWallet?: string;
-      signTransaction: (unsignedTxBase64: string) => Promise<string>;
+      /** USDC spend limit in atomic units (default: 100 USDC) */
       spendLimit?: string;
+      /** Role TTL in seconds (default: 24 hours) */
       ttlSeconds?: number;
     }): Promise<{
       swigAddress: string;
       roleId: number;
       status: string;
     }> {
+      if (!opts.signer && !opts.signTransaction) {
+        throw new SettlementError(
+          "onboard_no_signer",
+          "Provide either 'signer' (CryptoKeyPair) or 'signTransaction' callback",
+        );
+      }
+
       const wallet = opts.buyerWallet ?? buyerWallet;
+
+      // Build the signing function from whichever option was provided
+      const sign = opts.signer
+        ? async (txBase64: string): Promise<string> => {
+            const txBytes = Buffer.from(txBase64, 'base64');
+            const decoder = getTransactionDecoder();
+            const tx = decoder.decode(txBytes);
+            const signed = await partiallySignTransaction([opts.signer!], tx);
+            return getBase64EncodedWireTransaction(signed) as string;
+          }
+        : opts.signTransaction!;
 
       // May need two rounds for needs_swig (create wallet, then grant role)
       for (let round = 0; round < 2; round++) {
@@ -295,11 +326,10 @@ export function createSessionClient(params: SessionClientParameters) {
           );
         }
 
-        // Sign each transaction using the agent's callback
+        // Sign each transaction
         const signedTransactions: string[] = [];
         for (const txEntry of result.transactions) {
-          const signed = await opts.signTransaction(txEntry.tx);
-          signedTransactions.push(signed);
+          signedTransactions.push(await sign(txEntry.tx));
         }
 
         // Submit signed transactions for co-signing and broadcast
