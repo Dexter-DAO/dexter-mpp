@@ -86,6 +86,8 @@ export interface SessionOnboardResponse {
   };
   role_id?: number;
   spend_limit_remaining?: string;
+  /** Transaction signatures from server-side Swig wallet creation (if applicable). */
+  create_tx_signatures?: string[];
 }
 
 export interface SessionOnboardConfirmResponse {

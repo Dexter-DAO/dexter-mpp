@@ -289,6 +289,8 @@ export function createSessionClient(params: SessionClientParameters) {
       swigAddress: string;
       roleId: number;
       status: string;
+      /** Transaction signatures from server-side Swig wallet creation (if applicable). */
+      createTxSignatures?: string[];
     }> {
       if (!opts.signer && !opts.signTransaction) {
         throw new SettlementError(
@@ -386,6 +388,7 @@ export function createSessionClient(params: SessionClientParameters) {
             swigAddress: result.swig_address,
             roleId: result.role_id!,
             status: 'ready',
+            createTxSignatures: result.create_tx_signatures,
           };
         }
 
@@ -420,6 +423,7 @@ export function createSessionClient(params: SessionClientParameters) {
             swigAddress: confirmed.swig_address ?? result.swig_address,
             roleId: confirmed.role_id ?? 0,
             status: 'ready',
+            createTxSignatures: result.create_tx_signatures,
           };
         }
 
