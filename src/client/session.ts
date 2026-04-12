@@ -375,8 +375,8 @@ export function createSessionClient(params: SessionClientParameters) {
 
       const siwxHeader = encodeSIWxHeader(siwxPayload);
 
-      // May need two rounds for needs_swig (create wallet, then grant role)
-      for (let round = 0; round < 2; round++) {
+      // May need up to three rounds: create_swig → grant_role → activate_session_key
+      for (let round = 0; round < 3; round++) {
         const result: SessionOnboardResponse = await client.sessionOnboard({
           buyer_wallet: wallet,
           spend_limit_atomic: opts.spendLimit,
@@ -433,7 +433,7 @@ export function createSessionClient(params: SessionClientParameters) {
 
       throw new SettlementError(
         "onboard_incomplete",
-        "Onboarding did not complete after 2 rounds — check buyer wallet state",
+        "Onboarding did not complete after 3 rounds — check buyer wallet state",
       );
     },
 
