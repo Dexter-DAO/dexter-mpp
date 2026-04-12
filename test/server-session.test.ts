@@ -1,8 +1,50 @@
 import { describe, it, expect } from "vitest";
 import { createSessionServer } from "../src/server/session.js";
 import type { SessionVoucherResponse } from "../src/api.js";
+import nacl from "tweetnacl";
 
-// ── Helper to build a valid voucher response ──────────────────────────────
+// ── Real Ed25519 signing for tests ──────────────────────────────────────
+
+const BS58_CHARS = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+function encodeBase58(bytes: Uint8Array): string {
+  let num = BigInt(0);
+  for (const b of bytes) num = num * 256n + BigInt(b);
+  let encoded = "";
+  while (num > 0n) { encoded = BS58_CHARS[Number(num % 58n)] + encoded; num /= 58n; }
+  for (const b of bytes) { if (b !== 0) break; encoded = "1" + encoded; }
+  return encoded || "1";
+}
+
+const DOMAIN_SEPARATOR = "solana-mpp-session-voucher-v1:";
+
+function canonicalize(obj: unknown): unknown {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj !== "object") return obj;
+  if (Array.isArray(obj)) return obj.map(canonicalize);
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(obj as Record<string, unknown>).sort()) {
+    const val = (obj as Record<string, unknown>)[key];
+    if (val !== undefined) sorted[key] = canonicalize(val);
+  }
+  return sorted;
+}
+
+// Deterministic test keypair
+const TEST_KEYPAIR = nacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(42));
+const TEST_SIGNER = encodeBase58(TEST_KEYPAIR.publicKey);
+
+function signVoucher(voucher: SessionVoucherResponse["voucher"]): string {
+  const canonical = canonicalize(voucher);
+  const message = DOMAIN_SEPARATOR + JSON.stringify(canonical);
+  const messageBytes = new TextEncoder().encode(message);
+  const sig = nacl.sign.detached(messageBytes, TEST_KEYPAIR.secretKey);
+  return btoa(String.fromCharCode(...sig));
+}
+
+// ── Helper to build a signed voucher response ───────────────────────────
+
+const RECIPIENT = "SellerWallet1111111111111111111111111111111111";
 
 function makeVoucher(overrides: Partial<{
   channelId: string;
@@ -12,22 +54,29 @@ function makeVoucher(overrides: Partial<{
   signer: string;
   units: string;
 }>): SessionVoucherResponse {
+  const voucher = {
+    channelId: overrides.channelId ?? "ch_test",
+    payer: "BuyerWallet",
+    recipient: overrides.recipient ?? RECIPIENT,
+    cumulativeAmount: overrides.cumulativeAmount ?? "10000",
+    sequence: overrides.sequence ?? 1,
+    meter: "request",
+    units: overrides.units ?? "1",
+    serverNonce: "nonce-123",
+    chainId: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+    channelProgram: "swigypWHEksbC64pWKwah1WTeh9JXwx8H1rJHLdbQMB",
+  };
+
+  const useSigner = overrides.signer ?? TEST_SIGNER;
+  // If using a custom signer (not our test key), signature will be invalid
+  // — this is intentional for tests that check signer_changed_mid_session
+  const signature = useSigner === TEST_SIGNER ? signVoucher(voucher) : "invalid-sig";
+
   return {
     success: true,
-    voucher: {
-      channelId: overrides.channelId ?? "ch_test",
-      payer: "BuyerWallet",
-      recipient: overrides.recipient ?? "SellerWallet1111111111111111111111111111111111",
-      cumulativeAmount: overrides.cumulativeAmount ?? "10000",
-      sequence: overrides.sequence ?? 1,
-      meter: "request",
-      units: overrides.units ?? "1",
-      serverNonce: "nonce-123",
-      chainId: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
-      channelProgram: "swigypWHEksbC64pWKwah1WTeh9JXwx8H1rJHLdbQMB",
-    },
-    signature: "ed25519sig-base64",
-    signer: overrides.signer ?? "SessionPubkey111",
+    voucher,
+    signature,
+    signer: useSigner,
     signatureType: "ed25519",
   };
 }
@@ -65,14 +114,14 @@ describe("createSessionServer — validation", () => {
 describe("createSessionServer — getChallenge", () => {
   it("returns challenge with correct fields", () => {
     const server = createSessionServer({
-      recipient: "SellerWallet1111111111111111111111111111111111",
+      recipient: RECIPIENT,
       pricePerUnit: "10000",
     });
 
     const challenge = server.getChallenge();
 
     expect(challenge.type).toBe("mpp-session");
-    expect(challenge.recipient).toBe("SellerWallet1111111111111111111111111111111111");
+    expect(challenge.recipient).toBe(RECIPIENT);
     expect(challenge.pricePerUnit).toBe("10000");
     expect(challenge.network).toBe("mainnet-beta");
     expect(challenge.meter).toBe("request");
@@ -122,13 +171,11 @@ describe("createSessionServer — getChallenge", () => {
 // ── verifyVoucher ─────────────────────────────────────────────────────────
 
 describe("createSessionServer — verifyVoucher", () => {
-  const RECIPIENT = "SellerWallet1111111111111111111111111111111111";
-
   function makeServer(pricePerUnit = "10000") {
     return createSessionServer({ recipient: RECIPIENT, pricePerUnit });
   }
 
-  it("accepts a valid first voucher", () => {
+  it("accepts a valid first voucher with real Ed25519 signature", () => {
     const server = makeServer();
     const result = server.verifyVoucher(
       makeVoucher({ recipient: RECIPIENT, cumulativeAmount: "10000", sequence: 1 }),
@@ -180,11 +227,53 @@ describe("createSessionServer — verifyVoucher", () => {
     expect(result.error).toContain("unsupported_signature_type");
   });
 
+  it("rejects voucher with invalid signature", () => {
+    const server = makeServer();
+    const voucher = makeVoucher({ recipient: RECIPIENT, cumulativeAmount: "10000", sequence: 1 });
+    voucher.signature = btoa("x".repeat(64)); // wrong signature bytes
+
+    const result = server.verifyVoucher(voucher);
+
+    expect(result.valid).toBe(false);
+    expect(result.error).toBe("invalid_signature");
+  });
+
+  it("rejects voucher with tampered amount (signature mismatch)", () => {
+    const server = makeServer();
+    const voucher = makeVoucher({ recipient: RECIPIENT, cumulativeAmount: "10000", sequence: 1 });
+    // Tamper with the amount after signing
+    voucher.voucher.cumulativeAmount = "99999";
+
+    const result = server.verifyVoucher(voucher);
+
+    expect(result.valid).toBe(false);
+    expect(result.error).toBe("invalid_signature");
+  });
+
   it("rejects voucher with wrong recipient", () => {
     const server = makeServer();
-    const result = server.verifyVoucher(
-      makeVoucher({ recipient: "WrongRecipient" }),
-    );
+    // Build a voucher signed for the wrong recipient
+    const wrongRecipientVoucher = {
+      channelId: "ch_test",
+      payer: "BuyerWallet",
+      recipient: "WrongRecipient11111111111111111111111111111111",
+      cumulativeAmount: "10000",
+      sequence: 1,
+      meter: "request",
+      units: "1",
+      serverNonce: "nonce-123",
+      chainId: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+      channelProgram: "swigypWHEksbC64pWKwah1WTeh9JXwx8H1rJHLdbQMB",
+    };
+    const signed: SessionVoucherResponse = {
+      success: true,
+      voucher: wrongRecipientVoucher,
+      signature: signVoucher(wrongRecipientVoucher),
+      signer: TEST_SIGNER,
+      signatureType: "ed25519",
+    };
+
+    const result = server.verifyVoucher(signed);
 
     expect(result.valid).toBe(false);
     expect(result.error).toContain("recipient_mismatch");
@@ -243,18 +332,37 @@ describe("createSessionServer — verifyVoucher", () => {
         recipient: RECIPIENT,
         cumulativeAmount: "10000",
         sequence: 1,
-        signer: "OriginalSigner",
       }),
     );
 
-    const result = server.verifyVoucher(
-      makeVoucher({
-        recipient: RECIPIENT,
-        cumulativeAmount: "20000",
-        sequence: 2,
-        signer: "DifferentSigner",
-      }),
-    );
+    // Second voucher with different signer — signature will be invalid
+    // but signer_changed check comes after signature check now,
+    // so this will fail on invalid_signature first
+    const otherKeypair = nacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(99));
+    const otherSigner = encodeBase58(otherKeypair.publicKey);
+    const voucher2 = {
+      channelId: "ch_test",
+      payer: "BuyerWallet",
+      recipient: RECIPIENT,
+      cumulativeAmount: "20000",
+      sequence: 2,
+      meter: "request",
+      units: "1",
+      serverNonce: "nonce-123",
+      chainId: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+      channelProgram: "swigypWHEksbC64pWKwah1WTeh9JXwx8H1rJHLdbQMB",
+    };
+    const canonical2 = canonicalize(voucher2);
+    const msg2 = new TextEncoder().encode(DOMAIN_SEPARATOR + JSON.stringify(canonical2));
+    const sig2 = nacl.sign.detached(msg2, otherKeypair.secretKey);
+
+    const result = server.verifyVoucher({
+      success: true,
+      voucher: voucher2,
+      signature: btoa(String.fromCharCode(...sig2)),
+      signer: otherSigner,
+      signatureType: "ed25519",
+    });
 
     expect(result.valid).toBe(false);
     expect(result.error).toBe("signer_changed_mid_session");
@@ -354,8 +462,6 @@ describe("createSessionServer — verifyVoucher", () => {
 // ── getSessionContext ─────────────────────────────────────────────────────
 
 describe("createSessionServer — getSessionContext", () => {
-  const RECIPIENT = "SellerWallet1111111111111111111111111111111111";
-
   it("returns null for unknown channel", () => {
     const server = createSessionServer({ recipient: RECIPIENT, pricePerUnit: "10000" });
     expect(server.getSessionContext("ch_unknown")).toBeNull();
@@ -371,7 +477,7 @@ describe("createSessionServer — getSessionContext", () => {
     const ctx = server.getSessionContext("ch_test");
     expect(ctx).not.toBeNull();
     expect(ctx!.channelId).toBe("ch_test");
-    expect(ctx!.sessionPubkey).toBe("SessionPubkey111");
+    expect(ctx!.sessionPubkey).toBe(TEST_SIGNER);
     expect(ctx!.cumulativeAmount).toBe(10000n);
     expect(ctx!.voucherCount).toBe(1);
   });
@@ -395,8 +501,6 @@ describe("createSessionServer — getSessionContext", () => {
 // ── removeSession ─────────────────────────────────────────────────────────
 
 describe("createSessionServer — removeSession", () => {
-  const RECIPIENT = "SellerWallet1111111111111111111111111111111111";
-
   it("removes tracked session", () => {
     const server = createSessionServer({ recipient: RECIPIENT, pricePerUnit: "10000" });
 

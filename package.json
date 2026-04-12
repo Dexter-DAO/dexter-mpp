@@ -91,6 +91,7 @@
     "url": "https://github.com/Dexter-DAO/dexter-mpp"
   },
   "dependencies": {
-    "@x402/extensions": "^2.9.0"
+    "@x402/extensions": "^2.9.0",
+    "tweetnacl": "^1.0.3"
   }
 }

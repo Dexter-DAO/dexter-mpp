@@ -1,6 +1,64 @@
 import { DexterSettlementClient, SettlementError } from "../api.js";
 import { DEFAULT_DEXTER_API_URL } from "../constants.js";
 import type { SessionVoucherResponse } from "../api.js";
+import nacl from "tweetnacl";
+
+// =========================================================================
+// Ed25519 Voucher Signature Verification
+// =========================================================================
+
+const DOMAIN_SEPARATOR = "solana-mpp-session-voucher-v1:";
+const BS58_CHARS = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+/** JCS canonicalization — sort keys, strip undefined, recurse. */
+function canonicalize(obj: unknown): unknown {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj !== "object") return obj;
+  if (Array.isArray(obj)) return obj.map(canonicalize);
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(obj as Record<string, unknown>).sort()) {
+    const val = (obj as Record<string, unknown>)[key];
+    if (val !== undefined) sorted[key] = canonicalize(val);
+  }
+  return sorted;
+}
+
+/** Decode a base58 string to bytes. */
+function decodeBase58(str: string): Uint8Array {
+  let num = BigInt(0);
+  for (const c of str) {
+    const idx = BS58_CHARS.indexOf(c);
+    if (idx < 0) throw new Error(`Invalid base58 character: ${c}`);
+    num = num * 58n + BigInt(idx);
+  }
+  const bytes: number[] = [];
+  while (num > 0n) {
+    bytes.unshift(Number(num & 0xffn));
+    num >>= 8n;
+  }
+  for (const c of str) {
+    if (c !== "1") break;
+    bytes.unshift(0);
+  }
+  return new Uint8Array(bytes);
+}
+
+/**
+ * Verify an Ed25519 signature over a JCS-canonicalized voucher
+ * with the MPP domain separator.
+ */
+function verifyVoucherSignature(
+  voucher: SessionVoucherResponse["voucher"],
+  signature: string,
+  signerPubkey: string,
+): boolean {
+  const canonical = canonicalize(voucher);
+  const message = DOMAIN_SEPARATOR + JSON.stringify(canonical);
+  const messageBytes = new TextEncoder().encode(message);
+  const sigBytes = Uint8Array.from(atob(signature), (c) => c.charCodeAt(0));
+  const pubkeyBytes = decodeBase58(signerPubkey);
+  return nacl.sign.detached.verify(messageBytes, sigBytes, pubkeyBytes);
+}
 
 export type SessionServerParameters = {
   /** Solana wallet address that receives session payments. */
@@ -119,6 +177,15 @@ export function createSessionServer(params: SessionServerParameters) {
 
       if (signatureType !== "ed25519") {
         return { valid: false, error: `unsupported_signature_type: ${signatureType}` };
+      }
+
+      // Verify Ed25519 signature over the voucher
+      try {
+        if (!verifyVoucherSignature(voucher, signature, signer)) {
+          return { valid: false, error: "invalid_signature" };
+        }
+      } catch (e) {
+        return { valid: false, error: `signature_verification_failed: ${e instanceof Error ? e.message : String(e)}` };
       }
 
       // Check recipient matches
