@@ -50,7 +50,7 @@ const documents: Record<string, { title: string; content: string; relevance: num
   ],
   "ai agents payments": [
     { title: "Machine Payments Protocol Adoption", content: "MPP transaction volume grew 340% in Q1 2026, with 47 API providers accepting session-based micropayments. The average session processes 1,200 vouchers before settlement, with median session values of $2.40.", relevance: 0.93 },
-    { title: "x402 Protocol Ecosystem Report", content: "The x402 payment standard now has 26 facilitators across Solana and 8 EVM chains. Dexter processes 52% of daily settlement volume. Key growth areas: LLM inference billing, real-time data feeds, and multi-agent orchestration.", relevance: 0.91 },
+    { title: "x402 Protocol Ecosystem Report", content: "The x402 payment standard runs across Solana and multiple EVM chains. Dexter processes the vast majority of x402 settlement volume on Solana and a meaningful share across other chains. Key growth areas: LLM inference billing, real-time data feeds, and multi-agent orchestration.", relevance: 0.91 },
     { title: "Agent-to-Agent Commerce Patterns", content: "Autonomous agent spending reached $1.2M/month across x402 facilitators in March 2026. Primary use cases: data enrichment (38%), code generation (24%), research synthesis (21%), monitoring (17%).", relevance: 0.88 },
   ],
   "default": [

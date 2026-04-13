@@ -29,9 +29,9 @@ Two payment modes:
 Sellers install this package and get:
 - **Zero blockchain operations.** No RPC connections, no fee payer wallets, no SOL for gas. Dexter handles co-signing, simulation, broadcast, and confirmation.
 - **Gas-free for buyers.** Dexter sponsors all transaction fees. Buyers only need USDC and a Solana wallet.
-- **Production-grade settlement.** The same security validation, backpressure controls, and smart wallet support that powers 50% of daily x402 transactions — now available as an MPP method.
 - **Standard MPP protocol.** Works with any `mppx` client. Supports HTTP and MCP transports.
 - **Buyer onboarding.** One-call Swig smart wallet provisioning for session-capable agents.
+- **Non-custodial sessions.** Buyer funds stay in the buyer's Swig wallet until settlement. Buyer can revoke Dexter's authority at any time.
 
 The method name is `dexter`. Clients that support custom MPP methods will discover and use it automatically.
 
